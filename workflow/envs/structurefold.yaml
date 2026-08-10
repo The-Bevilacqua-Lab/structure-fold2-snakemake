@@ -1,0 +1,11 @@
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=2.7
+  - biopython=1.76
+  - numpy=1.16
+  - cutadapt=1.18
+  - samtools=1.9
+  - bowtie2=2.3.5

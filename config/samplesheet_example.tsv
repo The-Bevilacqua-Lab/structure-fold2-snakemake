@@ -1,0 +1,7 @@
+sample	ID	condition	run	r1
+S1	rep1	minus	run1	reads/S1_R1.fastq.gz
+S2	rep2	minus	run1	reads/S2_R1.fastq.gz
+S3	rep3	minus	run1	reads/S3_R1.fastq.gz
+S4	rep1	plus	run1	reads/S4_R1.fastq.gz
+S5	rep2	plus	run1	reads/S5_R1.fastq.gz
+S6	rep3	plus	run1	reads/S6_R1.fastq.gz

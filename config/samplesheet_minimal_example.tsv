@@ -1,0 +1,3 @@
+sample	condition	r1
+S1	minus	reads/S1_R1.fastq.gz
+S2	plus	reads/S2_R1.fastq.gz

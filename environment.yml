@@ -1,0 +1,13 @@
+name: structure-fold2-snakemake
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - snakemake
+      # lets --executor cluster-generic (see the SLURM example in
+      # Snakefile/README) submit jobs to a cluster scheduler; drop it if
+      # you only ever run locally.
+      - snakemake-executor-plugin-cluster-generic

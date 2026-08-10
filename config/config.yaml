@@ -1,0 +1,96 @@
+# -----------------------------------------------------------------------
+# structure-fold2-snakemake config template
+#
+# Copy this file, fill in the keys for your organism/experiment, and point
+# --configfile at your copy. Every key is documented below; optional keys
+# can be deleted entirely if you don't need them.
+# -----------------------------------------------------------------------
+
+# Required. Tab-separated samplesheet. Columns: sample, condition, r1,
+# and optionally ID (replicate group) and run (sequencing run). See
+# config/samplesheet_example.tsv and the Snakefile's samplesheet comment
+# for the exact column semantics and defaults if ID/run are omitted.
+samplesheet: config/samplesheet_example.tsv
+
+# Required. Where pipeline outputs (reactivity, QC, plots) are written.
+output_dir: results
+
+# Directory for intermediate/scratch files (alignments, trimmed reads,
+# per-replicate RT-stop counts). Can point at scratch storage -- these are
+# not needed once reactivity.react/.csv are produced. Default: "tmp".
+tmp_dir: tmp
+
+# ---------------------------------------------------------------------------
+# Transcriptome source: "file" or "gffread"
+#   file    - provide a pre-built transcriptome FASTA via the transcriptome
+#             key below (one sequence per transcript you want reactivity
+#             for). Simplest option if you already have one.
+#   gffread - build the transcriptome from a genome + GFF/GTF annotation:
+#             AGAT first keeps only the longest isoform per gene, then
+#             gffread extracts transcript sequences. Requires genome and
+#             gff below.
+# ---------------------------------------------------------------------------
+transcript_source: file
+
+# Used when transcript_source: file
+transcriptome: path/to/transcriptome.fa
+
+# Used when transcript_source: gffread
+# genome: path/to/genome.fa
+# gff: path/to/annotation.gff3
+
+# Optional. Genome-level GTF annotation + the genome FASTA above (or a
+# separate one) enable the transcript_position_annotations.tsv output,
+# labelling each transcript position 5UTR/CDS/3UTR with codon position.
+# Requires BOTH keys; omit either to skip this output entirely.
+# genome: path/to/genome.fa
+# annotation_gtf: path/to/annotation.gtf
+
+# Optional. FASTA of a positive-control sequence (e.g. a construct with a
+# known secondary structure) to append to the transcriptome so it's
+# included in alignment and reactivity calculation like any other
+# transcript. positive_control_name must match that sequence's FASTA
+# header exactly -- it drives the generic alignment-% QC in
+# workflow/rules/common.smk. If positive_control_name is literally "p4p6",
+# the pipeline ALSO plots reactivity directly onto the known p4p6
+# structure diagram (workflow/rules/positive_control.smk,
+# resources/p4p6/) -- that structure plot only exists for p4p6; any other
+# positive control still gets the alignment-% QC but no structure plot.
+# positive_control_fasta: resources/p4p6/p4p6.fa
+# positive_control_name: p4p6
+
+# Optional. FASTA of ncRNA sequences (e.g. rRNAs/tRNAs) to append to the
+# transcriptome before mapping, to soak up off-target reads.
+# ncrna_fasta: path/to/ncrna.fa
+
+# ---------------------------------------------------------------------------
+# Replicate pooling before the reactivity calculation.
+#   none  (default) - each replicate keeps its own +DMS and -DMS RT-stop
+#                      counts; one reactivity output per replicate (ID).
+#   minus            - pool -DMS across every replicate into one shared
+#                       background; +DMS stays per-replicate. Still one
+#                       reactivity output per replicate.
+#   plus             - pool +DMS across every replicate into one shared
+#                       treated signal; -DMS stays per-replicate. Still one
+#                       reactivity output per replicate.
+#   both             - pool BOTH channels across every replicate. Collapses
+#                       to exactly ONE reactivity output for the whole run
+#                       (under the synthetic ID "pooled"), since there's
+#                       only one pair of pooled +DMS/-DMS left.
+# See workflow/rules/structurefold2.smk for the full mechanics.
+# ---------------------------------------------------------------------------
+pool_replicates: none
+
+# ---------------------------------------------------------------------------
+# Optional. Combine per-sample base-specificity plots from several separate
+# pipeline runs (e.g. different organisms/genotypes/conditions, each with
+# its own output_dir + samplesheet) into one comparison figure. Omit
+# entirely if you only care about a single run's own specificity_plot.png.
+# ---------------------------------------------------------------------------
+# specificity_comparison_runs:
+#   - name: "Wild-type"
+#     output_dir: results_wildtype
+#     samplesheet: config/samples_wildtype.tsv
+#   - name: "Mutant"
+#     output_dir: results_mutant
+#     samplesheet: config/samples_mutant.tsv
