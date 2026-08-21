@@ -12,9 +12,9 @@ transcript-space CDS start and end.  Those coordinates are then applied to
 the actual TRANSCRIPTOME used in this pipeline run (which may differ from
 the reference at variant positions but preserves the same exon structure).
 
-Output columns (TSV)
+Output columns (CSV)
 --------------------
-transcript_id  position  region  codon_position
+transcript_id,position,region,codon_position
   position        : 1-based position in the transcript
   region          : 5UTR | CDS | 3UTR | noncoding
   codon_position  : 1, 2, or 3 for CDS bases; NA otherwise
@@ -39,7 +39,7 @@ def main():
     ap.add_argument("--tx_fasta",     required=True,
                     help="Transcriptome used in this pipeline run (TRANSCRIPTOME)")
     ap.add_argument("--output",       required=True,
-                    help="Output TSV file")
+                    help="Output CSV file")
     args = ap.parse_args()
 
     print("Loading reference transcripts...", file=sys.stderr)
@@ -72,7 +72,7 @@ def main():
     print("Writing per-position annotations...", file=sys.stderr)
     noncoding_total = 0
     with open(args.output, "w") as out:
-        out.write("transcript_id\tposition\tregion\tcodon_position\n")
+        out.write("transcript_id,position,region,codon_position\n")
 
         for rec in SeqIO.parse(args.tx_fasta, "fasta"):
             tx_id  = rec.id
@@ -82,24 +82,24 @@ def main():
                 # Non-coding or no annotation match
                 noncoding_total += 1
                 for pos in range(1, tx_len + 1):
-                    out.write(f"{tx_id}\t{pos}\tnoncoding\tNA\n")
+                    out.write(f"{tx_id},{pos},noncoding,NA\n")
                 continue
 
             cds_start, cds_end = cds_coords[tx_id]
 
             # 5'UTR
             for pos in range(1, cds_start + 1):
-                out.write(f"{tx_id}\t{pos}\t5UTR\tNA\n")
+                out.write(f"{tx_id},{pos},5UTR,NA\n")
 
             # CDS with codon positions
             for i in range(cds_end - cds_start):
                 pos = cds_start + i + 1
                 codon_pos = (i % 3) + 1
-                out.write(f"{tx_id}\t{pos}\tCDS\t{codon_pos}\n")
+                out.write(f"{tx_id},{pos},CDS,{codon_pos}\n")
 
             # 3'UTR
             for pos in range(cds_end + 1, tx_len + 1):
-                out.write(f"{tx_id}\t{pos}\t3UTR\tNA\n")
+                out.write(f"{tx_id},{pos},3UTR,NA\n")
 
     print(f"Done. {noncoding_total} transcripts written as noncoding.",
           file=sys.stderr)
