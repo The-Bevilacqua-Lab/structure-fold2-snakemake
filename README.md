@@ -41,14 +41,35 @@ Tab-separated, one row per (sample, sequencing run):
 | `r1` | yes | path to that (sample, run)'s raw FASTQ |
 | `ID` | no | groups samples into biological replicates (e.g. `rep1`) -- a given ID needs both a `plus` and `minus` row somewhere in the sheet, since the reactivity calculation pairs one condition's ID against the other's. **If omitted**, defaults to each sample's row position *within its condition* (`rep1`, `rep2`, ... independently for `plus` and `minus`) -- i.e. the 1st `minus` row pairs with the 1st `plus` row as one replicate, the 2nd with the 2nd, and so on. This assumes equal `plus`/`minus` counts given in matching order; give an explicit `ID` column if that's not your layout. |
 | `run` | no | distinguishes multiple sequencing runs of the same sample (e.g. resequenced on a second flow cell); same-sample rows get concatenated before trimming. **Defaults to a single run** if omitted. |
+| `temperature` | no | probing temperature for that row (e.g. `30`, `55`, or labels like `low`/`high` -- any two distinct values). **If present**, enables heat correction (`react_heat_correct.py`) between the two temperature groups -- see Outputs below. Every row of a given `ID` must share the same temperature, and exactly two distinct values must appear across the whole sheet. Omit the column entirely to skip heat correction. |
 
 
 ## Outputs (under `output_dir`)
 
-Per replicate ID (or the single `pooled` ID under `pool_replicates: both`):
+Per replicate ID (the single `pooled` ID under `pool_replicates: both`, or
+one `pooled_<temperature>` ID per temperature under `pool_replicates:
+both_by_temperature`):
 - `{id}/reactivity.react`, `.csv` -- +DMS/-DMS subtracted, 2-8%-normalized reactivity
 - `{id}/coverage.csv`, `{id}/specificity_{plus,minus}.csv`, `{id}/counts_minus.csv` -- per-replicate QC
 - `{id}/p4p6_react*.png` -- only when `positive_control_name: p4p6`
+- `{id}/heat_correction/reactivity_<suffix>.react` -- only when the
+  samplesheet has a `temperature` column. Follows Su et al. 2018 PNAS SI
+  (Materials and Methods, "Determination of DMS reactivity"): first
+  restricted to transcripts with RT-stop coverage >= 1 (AC bases) in the
+  pooled +DMS samples of BOTH temperatures (`qc/heat_correction_shared_transcripts.txt`),
+  then further narrowed to the exact transcript set shared by every
+  resulting `reactivity_precorrection.react` (coverage alone doesn't
+  guarantee this, since the reactivity calculation itself can still drop a
+  transcript per condition -- see `react_intersect_transcripts.py`); each
+  transcript's 2-8% percentile normalization scale is computed ONCE from
+  the pooled lower-temperature data only (`qc/heat_correction_lower_temperature.scale`)
+  and applied to both temperatures, rather than each computing its own
+  scale independently (the paper's step 3a/3b -- otherwise the higher
+  intrinsic DMS reactivity at the higher temperature partly renormalizes
+  itself away); finally rescaled onto a common overall-signal scale (the
+  paper's step 4) to correct for any remaining temperature-dependent
+  reactivity difference (suffix configurable via `heat_correction_suffix`
+  in `config/config.yaml`)
 
 Pipeline-wide, under `qc/`: alignment stats, replicate correlation (when
 there's more than one replicate), base specificity, and (when a positive

@@ -17,6 +17,12 @@ def get_rtsc_counts_by_condition_and_id(condition, id):
         for sample in rows["sample"].tolist()
     ]
 
+def get_rtsc_counts_by_condition_and_temperature(condition, temperature):
+    return [
+        f"{TMP}/output/se/{sample}/{sample}_trimmed_mapped_filtered.rtsc"
+        for sample in get_samples_by_condition_and_temperature(condition, temperature)
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Replicate pooling before the reactivity calculation
@@ -39,13 +45,23 @@ def get_rtsc_counts_by_condition_and_id(condition, id):
 #              the single synthetic ID "pooled" for this mode. Every
 #              per-ID rule elsewhere in the pipeline (coverage, specificity,
 #              QC plots...) then runs on that single pooled dataset for
-#              free, with no rule changes needed.
+#              free, with no rule changes needed. Requires the samplesheet
+#              to NOT have a 'temperature' column (see HEAT_CORRECTION in
+#              the Snakefile) -- pooling across temperature would destroy
+#              the distinction being corrected for.
+#   "both_by_temperature" -- like "both", but pools +DMS/-DMS within each
+#              temperature group separately instead of across the whole
+#              sheet. Requires a 'temperature' samplesheet column. Produces
+#              one synthetic ID per temperature ("pooled_<temperature>"),
+#              so heat correction still has two (single-replicate) groups
+#              to correct against each other.
 #
 # QC rules (coverage, specificity, nucleotide coverage, replicate
 # correlation, ...) always report on the true per-replicate data except
-# under "both", where there is no per-replicate data left to report on.
+# under "both"/"both_by_temperature", where there is no finer-grained data
+# left to report on.
 # ---------------------------------------------------------------------------
-_ALLOWED_POOL_REPLICATES = {"none", "minus", "plus", "both"}
+_ALLOWED_POOL_REPLICATES = {"none", "minus", "plus", "both", "both_by_temperature"}
 if POOL_REPLICATES not in _ALLOWED_POOL_REPLICATES:
     raise ValueError(
         f"config['pool_replicates'] must be one of {sorted(_ALLOWED_POOL_REPLICATES)}, "
@@ -67,10 +83,17 @@ def get_plus_rtsc_for_reactivity(wildcards):
 
 rule sam_to_rtsc:
     """
-    Count RT-stops from the SAM file
+    Count RT-stops from the SAM file.
+
+    Depends on TRANSCRIPTOME_UPPER (not just via params) so it's the first
+    post-mapping rule to require it -- every downstream rule that reads
+    TRANSCRIPTOME_UPPER only via params (not input:) relies on this edge to
+    guarantee it already exists, since every later per-transcript file
+    (.rtsc, .react, ...) traces back to this rule's output.
     """
     input:
-        f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped_filtered.sam"
+        sam=f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped_filtered.sam",
+        tx_upper=TRANSCRIPTOME_UPPER,
     output:
         f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped_filtered.rtsc"
     conda:
@@ -78,10 +101,10 @@ rule sam_to_rtsc:
     params:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/sam_to_rtsc.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
-        python {params.workdir}/{params.script} -single {input} {params.transcriptome}
+        python {params.workdir}/{params.script} -single {input.sam} {params.transcriptome}
         """
 
 
@@ -89,14 +112,16 @@ rule combine_rtsc_plus:
     """
     Combine the RT-stop counts of the sample(s) making up one +DMS
     replicate (ID). wildcard_constraints excludes the literal ID "pooled"
-    so this rule can never collide with combine_rtsc_plus_pooled below.
+    and anything starting with "pooled_" so this rule can never collide
+    with combine_rtsc_plus_pooled or combine_rtsc_plus_pooled_by_temperature
+    below.
     """
     input:
         lambda wc: get_rtsc_counts_by_condition_and_id("plus", wc.id)
     output:
         f"{TMP}/output/se/{{id}}/combined_plus.rtsc"
     wildcard_constraints:
-        id="(?!pooled$).+"
+        id="(?!pooled(_|$)).+"
     conda:
         "../envs/structurefold.yaml"
     params:
@@ -123,7 +148,7 @@ rule combine_rtsc_minus:
     output:
         f"{TMP}/output/se/{{id}}/combined_minus.rtsc"
     wildcard_constraints:
-        id="(?!pooled$).+"
+        id="(?!pooled(_|$)).+"
     conda:
         "../envs/structurefold.yaml"
     params:
@@ -193,6 +218,60 @@ rule combine_rtsc_minus_pooled:
         """
 
 
+rule combine_rtsc_plus_pooled_by_temperature:
+    """
+    Pool the +DMS RT-stop counts across every replicate within one
+    temperature group (pool_replicates: both_by_temperature). Always
+    defined (harmless if unused). Its output lands at the same
+    {TMP}/output/se/{id}/combined_plus.rtsc path every other per-ID rule
+    already expects, with id == "pooled_<temperature>" -- see IDS in the
+    main Snakefile under this mode -- so no other rule needs to change.
+    """
+    input:
+        lambda wc: get_rtsc_counts_by_condition_and_temperature("plus", wc.temperature)
+    output:
+        f"{TMP}/output/se/pooled_{{temperature}}/combined_plus.rtsc"
+    conda:
+        "../envs/structurefold.yaml"
+    params:
+        workdir=f"{workflow.basedir}/workflow",
+        script="scripts/StructureFold2/rtsc_combine.py",
+        tmpdir=f"{TMP}/structurefold2/pooled_{{temperature}}_combined_plus"
+    shell:
+        """
+        mkdir -p {params.tmpdir} && \
+        cp {input} {params.tmpdir}/ && \
+        python {params.workdir}/{params.script} -name {params.tmpdir}/combined_plus {input} &&
+        mv {params.tmpdir}/combined_plus.rtsc {output} && \
+        rm -rf {params.tmpdir}
+        """
+
+
+rule combine_rtsc_minus_pooled_by_temperature:
+    """
+    Pool the -DMS RT-stop counts across every replicate within one
+    temperature group. See combine_rtsc_plus_pooled_by_temperature.
+    """
+    input:
+        lambda wc: get_rtsc_counts_by_condition_and_temperature("minus", wc.temperature)
+    output:
+        f"{TMP}/output/se/pooled_{{temperature}}/combined_minus.rtsc"
+    conda:
+        "../envs/structurefold.yaml"
+    params:
+        workdir=f"{workflow.basedir}/workflow",
+        script="scripts/StructureFold2/rtsc_combine.py",
+        tmpdir=f"{TMP}/structurefold2/pooled_{{temperature}}_combined_minus"
+    shell:
+        """
+        mkdir -p {params.tmpdir} && \
+        cp {input} {params.tmpdir}/ && \
+        python {params.workdir}/{params.script} -name {params.tmpdir}/combined_minus {input} &&
+        mv {params.tmpdir}/combined_minus.rtsc {output} && \
+        rm -rf {params.tmpdir}
+        """
+
+
 rule rtsc_to_react:
     """
     Convert the RT-stop counts to reactivities
@@ -209,7 +288,7 @@ rule rtsc_to_react:
     params:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_to_react.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
         output_prefix=f"{config['output_dir']}/{{id}}/reactivity",
     shell:
         """
@@ -235,7 +314,7 @@ rule rtsc_to_react_plus_only:
     conda:
         "../envs/biopython.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
         output_prefix=f"{config['output_dir']}/{{id}}/reactivity_plus_only",
     shell:
         """
@@ -258,7 +337,7 @@ rule rtsc_to_raw_react_plus_only:
     conda:
         "../envs/biopython.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
         output_prefix=f"{config['output_dir']}/{{id}}/raw_reactivity_plus_only",
     shell:
         """
@@ -288,7 +367,7 @@ rule rtsc_to_raw_react:
     params:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_to_react.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
         output_prefix=f"{config['output_dir']}/{{id}}/raw_reactivity",
     shell:
         """
@@ -296,6 +375,401 @@ rule rtsc_to_raw_react:
         python {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
             -name {params.output_prefix} -nrm_off -threshold 1000000
         """
+
+
+# ---------------------------------------------------------------------------
+# Optional: heat correction between two temperature conditions
+#
+# react_heat_correct.py rescales two sets of reactivity.react files (e.g. the
+# same construct/transcriptome probed at a lower and a higher temperature) so
+# both conditions share the same overall mean signal -- correcting for heat
+# itself increasing overall reagent reactivity, independent of any real
+# structural difference. It requires every input .react to share the exact
+# same transcript set, AND its own docstring requires those transcripts to
+# already be restricted to ones above an accepted coverage threshold -- a
+# transcript with little to no +DMS signal in one temperature condition is
+# not a meaningful member of either condition's shared signal scale.
+#
+# So before heat correction, restrict both conditions to transcripts with
+# RT-stop coverage >= 1 (StructureFold2's standard AC-specific
+# stops-per-base metric) in the POOLED +DMS samples of BOTH temperatures --
+# pooled regardless of config['pool_replicates'], so a low-coverage
+# replicate can't be masked by pooling, and the same qualifying set is used
+# whether or not replicates are pooled for the reactivity calculation
+# itself. The shared/overlapping transcript list itself is generated with
+# coverage_overlap.py (workflow/scripts/StructureFold2/deprecated/) --
+# upstream StructureFold2 has since folded that functionality into
+# rtsc_coverage.py's own -ol flag, but this project calls the original
+# script directly.
+#
+# Following Su et al. 2018 PNAS SI (Materials and Methods, "Determination
+# of DMS reactivity", steps 3a/3b): the per-transcript 2-8% normalization
+# scale is generated ONCE from the pooled LOWER-temperature data only, then
+# that SAME scale is applied to the higher-temperature data too, rather
+# than each temperature computing its own independent scale. DMS is
+# intrinsically more reactive at higher temperature; letting the higher
+# temperature renormalize itself would partly cancel that increase back
+# out during normalization, masking the very heat-induced reactivity
+# change react_heat_correct.py (step 4 in the SI) is meant to reveal. See
+# heat_correction_lower_temperature_scale / rtsc_to_react_heat_shared below.
+#
+# Enabled by an optional 'temperature' column in the samplesheet -- see the
+# Snakefile's samplesheet comment for the exact semantics. HEAT_CORRECTION,
+# HEAT_CORRECTION_LOWER_IDS/HIGHER_IDS, and HEAT_CORRECTION_SUFFIX are
+# computed there (from samples_runs) before this file is included.
+# ---------------------------------------------------------------------------
+if HEAT_CORRECTION:
+
+    rule heat_correction_plus_coverage:
+        """
+        Per-transcript RT-stop coverage (rtsc_coverage.py, AC-specific
+        stops-per-base) for the pooled +DMS samples of both temperature
+        conditions (combine_rtsc_plus_pooled_by_temperature pools +DMS
+        across every replicate of one temperature regardless of
+        pool_replicates). Feeds heat_correction_shared_transcripts below.
+
+        Each temperature's combined_plus.rtsc is copied to a bare
+        <temperature>.rtsc name in a scratch dir first, then rtsc_coverage.py
+        is run from there, so the resulting coverage.csv's column headers
+        are plain temperature labels rather than full paths -- required by
+        coverage_overlap.py below, which derives its own output filename
+        from those headers and can't handle a '/' in one.
+        """
+        input:
+            lower=f"{TMP}/output/se/pooled_{DISTINCT_TEMPERATURES[0]}/combined_plus.rtsc",
+            higher=f"{TMP}/output/se/pooled_{DISTINCT_TEMPERATURES[1]}/combined_plus.rtsc",
+        output:
+            f"{config['output_dir']}/qc/heat_correction_plus_coverage.csv"
+        conda:
+            "../envs/structurefold.yaml"
+        params:
+            workdir=f"{workflow.basedir}/workflow",
+            script="scripts/StructureFold2/rtsc_coverage.py",
+            transcriptome=os.path.abspath(TRANSCRIPTOME_UPPER),
+            tmpdir=f"{TMP}/structurefold2/heat_correction_plus_coverage",
+            lower_name=f"{DISTINCT_TEMPERATURES[0]}.rtsc",
+            higher_name=f"{DISTINCT_TEMPERATURES[1]}.rtsc",
+        shell:
+            """
+            mkdir -p {params.tmpdir} $(dirname {output}) && \
+            cp {input.lower} {params.tmpdir}/{params.lower_name} && \
+            cp {input.higher} {params.tmpdir}/{params.higher_name} && \
+            OUT_ABS=$(readlink -f {output}) && \
+            cd {params.tmpdir} && \
+            python {params.workdir}/{params.script} \
+                {params.transcriptome} -f {params.lower_name} {params.higher_name} \
+                -name "$OUT_ABS" && \
+            cd - > /dev/null && \
+            rm -rf {params.tmpdir}
+            """
+
+
+    rule heat_correction_shared_transcripts:
+        """
+        List transcripts with RT-stop coverage >= 1 in the pooled +DMS
+        samples of BOTH temperature conditions (heat_correction_plus_coverage),
+        using StructureFold2's coverage_overlap.py, for restricting the
+        reactivity calculation feeding heat correction to a shared,
+        coverage-qualified transcript set.
+
+        coverage_overlap.py names its own output from the input CSV's
+        column headers and always writes into the current directory, so
+        this runs from a scratch dir and the result is moved to the
+        declared output.
+        """
+        input:
+            f"{config['output_dir']}/qc/heat_correction_plus_coverage.csv"
+        output:
+            f"{config['output_dir']}/qc/heat_correction_shared_transcripts.txt"
+        conda:
+            "../envs/structurefold.yaml"
+        params:
+            workdir=f"{workflow.basedir}/workflow",
+            script="scripts/StructureFold2/deprecated/coverage_overlap.py",
+            tmpdir=f"{TMP}/structurefold2/heat_correction_shared_transcripts",
+            threshold=1.0,
+        shell:
+            """
+            mkdir -p {params.tmpdir} $(dirname {output}) && \
+            IN_ABS=$(readlink -f {input}) && \
+            cd {params.tmpdir} && \
+            python {params.workdir}/{params.script} -f "$IN_ABS" -n {params.threshold} && \
+            cd - > /dev/null && \
+            mv {params.tmpdir}/*_overlap_{params.threshold}.txt {output} && \
+            rm -rf {params.tmpdir}
+            """
+
+
+    rule heat_correction_lower_temperature_scale:
+        """
+        Generate the per-transcript 2-8% normalization scale (Su et al. 2018
+        PNAS SI step 3a) from the FULLY POOLED lower-temperature dataset
+        only (combine_rtsc_plus/minus_pooled_by_temperature -- defined
+        regardless of pool_replicates), restricted to the coverage-qualified
+        shared transcripts. rtsc_to_react_heat_shared below applies this
+        SAME scale to every ID on both sides of the correction (step 3b),
+        rather than each ID computing its own independent scale, matching
+        the paper's method. Using the fully pooled lower-temperature data
+        (rather than each lower replicate's own noisier scale) also gives a
+        single, well-defined scale to share when pool_replicates isn't
+        both_by_temperature and there are multiple lower/higher replicates.
+        """
+        input:
+            plus=f"{TMP}/output/se/pooled_{DISTINCT_TEMPERATURES[0]}/combined_plus.rtsc",
+            minus=f"{TMP}/output/se/pooled_{DISTINCT_TEMPERATURES[0]}/combined_minus.rtsc",
+            restrict=f"{config['output_dir']}/qc/heat_correction_shared_transcripts.txt",
+        output:
+            react=f"{config['output_dir']}/qc/heat_correction_lower_temperature.react",
+            scale=f"{config['output_dir']}/qc/heat_correction_lower_temperature.scale",
+        conda:
+            "../envs/structurefold.yaml"
+        params:
+            workdir=f"{workflow.basedir}/workflow",
+            script="scripts/StructureFold2/rtsc_to_react.py",
+            transcriptome=TRANSCRIPTOME_UPPER,
+            output_prefix=f"{config['output_dir']}/qc/heat_correction_lower_temperature",
+        shell:
+            """
+            mkdir -p $(dirname {output.react}) && \
+            python {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
+                -name {params.output_prefix} -restrict {input.restrict}
+            """
+
+
+    rule rtsc_to_react_heat_shared:
+        """
+        Same reactivity calculation as rtsc_to_react, restricted (-restrict)
+        to the transcripts in heat_correction_shared_transcripts, and
+        normalized with the shared lower-temperature 2-8% scale
+        (heat_correction_lower_temperature_scale) instead of each ID
+        computing its own -- see the "Optional: heat correction" comment
+        block above for why. Coverage alone doesn't guarantee an identical
+        transcript set across conditions though -- rtsc_to_react.py also
+        independently drops transcripts with zero +DMS signal or an
+        unresolvable normalization scale -- so this is an intermediate
+        file, further narrowed by heat_correction_shared_react below.
+        """
+        input:
+            plus=get_plus_rtsc_for_reactivity,
+            minus=get_minus_rtsc_for_reactivity,
+            restrict=f"{config['output_dir']}/qc/heat_correction_shared_transcripts.txt",
+            scale=f"{config['output_dir']}/qc/heat_correction_lower_temperature.scale",
+        output:
+            f"{config['output_dir']}/{{id}}/heat_correction/reactivity_precorrection.react"
+        wildcard_constraints:
+            id="[^/]+"
+        conda:
+            "../envs/structurefold.yaml"
+        params:
+            workdir=f"{workflow.basedir}/workflow",
+            script="scripts/StructureFold2/rtsc_to_react.py",
+            transcriptome=TRANSCRIPTOME_UPPER,
+            output_prefix=f"{config['output_dir']}/{{id}}/heat_correction/reactivity_precorrection",
+        shell:
+            """
+            mkdir -p $(dirname {output}) && \
+            python {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
+                -name {params.output_prefix} -restrict {input.restrict} -scale {input.scale}
+            """
+
+
+    rule heat_correction_shared_react:
+        """
+        Narrow every rtsc_to_react_heat_shared output (both temperatures,
+        all replicates) down to the transcripts present in ALL of them, so
+        react_heat_correct.py's "exact same transcripts" requirement is
+        actually satisfied -- the coverage restriction alone isn't enough,
+        see rtsc_to_react_heat_shared.
+        """
+        input:
+            expand(
+                f"{config['output_dir']}/{{id}}/heat_correction/reactivity_precorrection.react",
+                id=HEAT_CORRECTION_LOWER_IDS + HEAT_CORRECTION_HIGHER_IDS,
+            )
+        output:
+            expand(
+                f"{config['output_dir']}/{{id}}/heat_correction/reactivity.react",
+                id=HEAT_CORRECTION_LOWER_IDS + HEAT_CORRECTION_HIGHER_IDS,
+            )
+        conda:
+            "../envs/structurefold.yaml"
+        params:
+            script=f"{workflow.basedir}/workflow/scripts/react_intersect_transcripts.py",
+        shell:
+            """
+            python {params.script} -in {input} -out {output}
+            """
+
+
+    rule convert_pre_heat_correction_react_to_csv:
+        """
+        Convert the pre-correction reactivities (heat_correction_shared_react
+        -- coverage- and transcript-set-restricted, but not yet rescaled) to
+        CSV form (transcript, position, base, reactivity -- one row per
+        position), same as convert_react_to_csv. Lets the corrected and
+        uncorrected values be compared directly, since both sides cover the
+        exact same transcripts/positions.
+        """
+        input:
+            f"{config['output_dir']}/{{id}}/heat_correction/reactivity.react"
+        output:
+            f"{config['output_dir']}/{{id}}/heat_correction/reactivity.csv"
+        wildcard_constraints:
+            id="[^/]+"
+        conda:
+            "../envs/biopython.yaml"
+        params:
+            transcriptome=TRANSCRIPTOME_UPPER,
+        shell:
+            """
+            python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
+            """
+
+
+    rule heat_correct_reactivity:
+        """
+        Scale coverage- and transcript-set-restricted reactivity.react
+        files (heat_correction_shared_react) from a lower- and a
+        higher-temperature condition onto a common overall-signal scale
+        with react_heat_correct.py, supporting multiple replicates per
+        temperature.
+        """
+        input:
+            lower=expand(f"{config['output_dir']}/{{id}}/heat_correction/reactivity.react", id=HEAT_CORRECTION_LOWER_IDS),
+            higher=expand(f"{config['output_dir']}/{{id}}/heat_correction/reactivity.react", id=HEAT_CORRECTION_HIGHER_IDS),
+        output:
+            lower=expand(f"{config['output_dir']}/{{id}}/heat_correction/reactivity_{HEAT_CORRECTION_SUFFIX}.react", id=HEAT_CORRECTION_LOWER_IDS),
+            higher=expand(f"{config['output_dir']}/{{id}}/heat_correction/reactivity_{HEAT_CORRECTION_SUFFIX}.react", id=HEAT_CORRECTION_HIGHER_IDS),
+        log:
+            f"{config['output_dir']}/qc/heat_correction_scale_factors.log"
+        conda:
+            "../envs/structurefold.yaml"
+        params:
+            workdir=f"{workflow.basedir}/workflow",
+            script="scripts/StructureFold2/react_heat_correct.py",
+            suffix=HEAT_CORRECTION_SUFFIX,
+        shell:
+            """
+            python {params.workdir}/{params.script} \
+                -lower {input.lower} \
+                -higher {input.higher} \
+                -suffix {params.suffix} > {log} 2>&1
+            """
+
+
+    rule convert_heat_corrected_react_to_csv:
+        """
+        Convert heat-corrected reactivities to CSV form (transcript,
+        position, base, reactivity -- one row per position), same as
+        convert_react_to_csv.
+        """
+        input:
+            f"{config['output_dir']}/{{id}}/heat_correction/reactivity_{HEAT_CORRECTION_SUFFIX}.react"
+        output:
+            f"{config['output_dir']}/{{id}}/heat_correction/reactivity_{HEAT_CORRECTION_SUFFIX}.csv"
+        wildcard_constraints:
+            id="[^/]+"
+        conda:
+            "../envs/biopython.yaml"
+        params:
+            transcriptome=TRANSCRIPTOME_UPPER,
+        shell:
+            """
+            python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
+            """
+
+
+    # -----------------------------------------------------------------------
+    # Optional comparison run: heat-correct on EVERY transcript present in
+    # both temperature conditions' PLAIN reactivity.react (rtsc_to_react),
+    # with no RT-stop coverage threshold at all -- to see how much the
+    # coverage-qualification step above (heat_correction_shared_transcripts)
+    # actually changes the correction, vs. just intersecting whatever
+    # rtsc_to_react.py could compute a reactivity for. Mirrors
+    # heat_correction_shared_react / heat_correct_reactivity /
+    # convert_heat_corrected_react_to_csv exactly, minus the coverage
+    # restriction. Enabled by config['heat_correction_compare_all_transcripts'].
+    # -----------------------------------------------------------------------
+    if HEAT_CORRECTION_COMPARE_ALL_TRANSCRIPTS:
+
+        rule heat_correction_all_transcripts_shared_react:
+            """
+            Narrow the plain, unrestricted reactivity.react (rtsc_to_react)
+            for every heat-correction ID down to the transcripts present in
+            ALL of them -- no coverage threshold, just whatever
+            rtsc_to_react.py itself could compute a reactivity for. The
+            no-coverage-filter counterpart to heat_correction_shared_react.
+            """
+            input:
+                expand(
+                    f"{config['output_dir']}/{{id}}/reactivity.react",
+                    id=HEAT_CORRECTION_LOWER_IDS + HEAT_CORRECTION_HIGHER_IDS,
+                )
+            output:
+                expand(
+                    f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity.react",
+                    id=HEAT_CORRECTION_LOWER_IDS + HEAT_CORRECTION_HIGHER_IDS,
+                )
+            conda:
+                "../envs/structurefold.yaml"
+            params:
+                script=f"{workflow.basedir}/workflow/scripts/react_intersect_transcripts.py",
+            shell:
+                """
+                mkdir -p $(dirname {output[0]}) && \
+                python {params.script} -in {input} -out {output}
+                """
+
+
+        rule heat_correct_reactivity_all_transcripts:
+            """
+            The no-coverage-filter counterpart to heat_correct_reactivity --
+            same react_heat_correct.py rescaling, run on every transcript
+            present in both conditions regardless of coverage
+            (heat_correction_all_transcripts_shared_react).
+            """
+            input:
+                lower=expand(f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity.react", id=HEAT_CORRECTION_LOWER_IDS),
+                higher=expand(f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity.react", id=HEAT_CORRECTION_HIGHER_IDS),
+            output:
+                lower=expand(f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity_{HEAT_CORRECTION_SUFFIX}.react", id=HEAT_CORRECTION_LOWER_IDS),
+                higher=expand(f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity_{HEAT_CORRECTION_SUFFIX}.react", id=HEAT_CORRECTION_HIGHER_IDS),
+            log:
+                f"{config['output_dir']}/qc/heat_correction_all_transcripts_scale_factors.log"
+            conda:
+                "../envs/structurefold.yaml"
+            params:
+                workdir=f"{workflow.basedir}/workflow",
+                script="scripts/StructureFold2/react_heat_correct.py",
+                suffix=HEAT_CORRECTION_SUFFIX,
+            shell:
+                """
+                python {params.workdir}/{params.script} \
+                    -lower {input.lower} \
+                    -higher {input.higher} \
+                    -suffix {params.suffix} > {log} 2>&1
+                """
+
+
+        rule convert_heat_correction_all_transcripts_to_csv:
+            """
+            Convert the all-transcripts (no coverage filter) heat-corrected
+            reactivities to CSV form, same as convert_heat_corrected_react_to_csv.
+            """
+            input:
+                f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity_{HEAT_CORRECTION_SUFFIX}.react"
+            output:
+                f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity_{HEAT_CORRECTION_SUFFIX}.csv"
+            wildcard_constraints:
+                id="[^/]+"
+            conda:
+                "../envs/biopython.yaml"
+            params:
+                transcriptome=TRANSCRIPTOME_UPPER,
+            shell:
+                """
+                python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
+                """
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +804,7 @@ rule rtsc_to_react_comparison:
     params:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_to_react.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
         output_prefix=lambda wc: f"{config['output_dir']}/{wc.id}/norm_comparison/{wc.trim}_{wc.nlog}_{wc.norm}/reactivity",
         trim_flag=lambda wc: "-trim3 125" if wc.trim == "trim125" else "",
         ln_flag=lambda wc: "-ln_off" if wc.nlog == "noln" else "",
@@ -346,9 +820,14 @@ def get_sams_by_condition_and_id(condition, id):
     # "pooled" is the synthetic ID used only when pool_replicates == "both"
     # (see IDS in the main Snakefile) -- it's not a real ID in the
     # samplesheet, so fall back to every sample of that condition, mirroring
-    # get_rtsc_counts_by_condition's pooling behavior.
+    # get_rtsc_counts_by_condition's pooling behavior. "pooled_<temperature>"
+    # is the analogous synthetic ID for pool_replicates ==
+    # "both_by_temperature", mirroring get_rtsc_counts_by_condition_and_temperature.
     if id == "pooled":
         rows = samples.loc[samples["condition"] == condition]
+    elif id.startswith("pooled_"):
+        temperature = id[len("pooled_"):]
+        rows = samples.loc[(samples["condition"] == condition) & (samples["temperature"] == temperature)]
     else:
         rows = samples.loc[(samples["condition"] == condition) & (samples["ID"] == id)]
     if rows.empty:
@@ -390,7 +869,7 @@ rule calculate_stop_coverage:
         coverage_name=f"{config['output_dir']}/{{id}}/coverage",
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_coverage.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         mkdir -p $(dirname {output.coverage}) && \
@@ -430,7 +909,7 @@ rule calculate_nucleotide_coverage:
     conda:
         "../envs/structurefold.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python3 workflow/scripts/rtsc_to_nucleotide_coverage.py \
@@ -454,7 +933,7 @@ rule calculate_specificity:
         output=f"{config['output_dir']}/{{id}}/specificity_{{treatment}}",
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_specificity.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     conda:
         "../envs/structurefold.yaml"
     shell:
@@ -475,7 +954,7 @@ rule convert_react_to_csv:
     conda:
         "../envs/biopython.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
@@ -495,7 +974,7 @@ rule convert_react_plus_only_to_csv:
     conda:
         "../envs/biopython.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
@@ -515,7 +994,7 @@ rule convert_raw_react_plus_only_to_csv:
     conda:
         "../envs/biopython.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
@@ -535,7 +1014,7 @@ rule convert_raw_react_to_csv:
     conda:
         "../envs/biopython.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
@@ -554,7 +1033,7 @@ rule convert_react_comparison_to_csv:
     conda:
         "../envs/biopython.yaml"
     params:
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome}
@@ -569,7 +1048,7 @@ rule calculate_specificity_by_sample:
         output=f"{config['output_dir']}/specificity_{{sample}}",
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_specificity.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     conda:
         "../envs/structurefold.yaml"
     shell:
@@ -621,7 +1100,7 @@ rule rtsc_stop_correlation:
     params:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_correlation.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python {params.workdir}/{params.script} \
@@ -669,7 +1148,7 @@ rule rtsc_stop_correlation_minus:
     params:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold2/rtsc_correlation.py",
-        transcriptome=TRANSCRIPTOME,
+        transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
         python {params.workdir}/{params.script} \

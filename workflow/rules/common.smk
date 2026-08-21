@@ -14,6 +14,11 @@ TMP = config.get("tmp_dir", "tmp")
 # It is produced by the prepare_transcriptome rule below.
 TRANSCRIPTOME = f"{TMP}/resources/transcriptome.fa"
 
+# Uppercase-only copy of TRANSCRIPTOME, produced by uppercase_transcriptome
+# below. Used (instead of TRANSCRIPTOME) by every rule downstream of
+# mapping that checks base identity -- see that rule's docstring for why.
+TRANSCRIPTOME_UPPER = f"{TMP}/resources/transcriptome_upper.fa"
+
 
 def _source_transcriptome(wildcards):
     """Return the raw transcriptome FASTA before extra sequences are appended."""
@@ -115,6 +120,33 @@ rule prepare_transcriptome:
         "awk 1 {input.transcriptome} {input.extras} > {output} 2> {log}"
 
 
+rule uppercase_transcriptome:
+    """
+    Write an uppercase-only copy of TRANSCRIPTOME (TRANSCRIPTOME_UPPER).
+
+    Bowtie2 alignment is case-insensitive, so a source transcriptome FASTA
+    with soft-masked (lowercase) bases still maps correctly -- but every
+    base-identity check downstream of mapping (reactivity/specificity "is
+    this position an A or C" tests, UTR/CDS annotation) compares
+    case-sensitively against an uppercase specificity set, so those
+    lowercase bases would otherwise be silently skipped. Kept as a separate
+    file (rather than uppercasing TRANSCRIPTOME itself) so the already-built
+    Bowtie2 index/alignments never need to be redone for this.
+    """
+    input:
+        TRANSCRIPTOME
+    output:
+        TRANSCRIPTOME_UPPER
+    conda:
+        "../envs/biopython.yaml"
+    log:
+        "logs/uppercase_transcriptome/uppercase.log"
+    message:
+        "Uppercasing transcriptome for downstream base-identity checks"
+    shell:
+        "python3 workflow/scripts/uppercase_fasta.py --input {input} --output {output} > {log} 2>&1"
+
+
 # ---------------------------------------------------------------------------
 # Alignment (bowtie2 only -- the only aligner this pipeline actually runs
 # end-to-end; see README for notes on extending it)
@@ -192,6 +224,13 @@ def get_samples_by_condition(condition):
     rows = samples.loc[samples["condition"] == condition]
     if rows.empty:
         raise ValueError(f"No samples found for condition '{condition}'")
+    return rows["sample"].tolist()
+
+
+def get_samples_by_condition_and_temperature(condition, temperature):
+    rows = samples.loc[(samples["condition"] == condition) & (samples["temperature"] == temperature)]
+    if rows.empty:
+        raise ValueError(f"No samples found for condition '{condition}' and temperature '{temperature}'")
     return rows["sample"].tolist()
 
 
@@ -275,7 +314,7 @@ rule filter_sam:
     shell:
         """
         cd {params.sample_dir} &&
-        python {params.workdir}/{params.script} -max_mismatch 4 -logname {params.log}
+        python {params.workdir}/{params.script} -max_mismatch 3 -logname {params.log}
         """
 
 

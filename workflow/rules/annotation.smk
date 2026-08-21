@@ -1,8 +1,9 @@
 ############################################################################
 # Transcript position annotation rules
 #
-# Produces a per-position TSV for the active TRANSCRIPTOME labelling each
-# base as 5UTR, CDS, or 3UTR, with codon position (1/2/3) for CDS bases.
+# Produces a per-position CSV for the active TRANSCRIPTOME labelling each
+# base as 5UTR, CDS, 3UTR, or noncoding, with codon position (1/2/3) for
+# CDS bases.
 #
 # Requires the following config keys to be set:
 #   genome         – path to the reference genome FASTA
@@ -46,8 +47,9 @@ if config.get("annotation_gtf") and config.get("genome"):
 
     rule annotate_transcript_positions:
         """
-        Annotate each position in each transcript as 5UTR, CDS, or 3UTR.
-        For CDS positions, report the codon position (1, 2, or 3).
+        Annotate each position in each transcript as 5UTR, CDS, 3UTR, or
+        noncoding (transcripts with no CDS match). For CDS positions,
+        report the codon position (1, 2, or 3).
 
         The CDS location in transcript space is determined by finding the
         gffread CDS sequence as a substring of the gffread reference
@@ -59,7 +61,7 @@ if config.get("annotation_gtf") and config.get("genome"):
             cds    = f"{TMP}/resources/cds.fa",
             tx     = TRANSCRIPTOME,
         output:
-            f"{config['output_dir']}/transcript_position_annotations.tsv"
+            f"{config['output_dir']}/transcript_position_annotations.csv"
         conda:
             "../envs/biopython.yaml"
         log:
