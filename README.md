@@ -1,7 +1,7 @@
 # structure-fold2-snakemake
 
 ## Overview
-A generalized Snakemake pipeline around [StructureFold2](https://github.com/StructureFold2/StructureFold2)
+A generalized Snakemake workflow around [StructureFold2](https://github.com/StructureFold2/StructureFold2)
 to get reactivities from a Structure-seq experiment. Given
 raw/trimmed single-end reads and a transcriptome (or a genome + annotation to
 build one), it aligns with Bowtie2, counts RT-stops per replicate, and
@@ -49,8 +49,15 @@ Tab-separated, one row per (sample, sequencing run):
 Per replicate ID (the single `pooled` ID under `pool_replicates: both`, or
 one `pooled_<temperature>` ID per temperature under `pool_replicates:
 both_by_temperature`):
-- `{id}/reactivity.react`, `.csv` -- +DMS/-DMS subtracted, 2-8%-normalized reactivity
+- `{id}/reactivity.react`, `.csv` -- +DMS/-DMS subtracted, 2-8%-normalized reactivity.
+  Normally covers the whole transcript; when `reactivity_region` is set (5UTR/CDS/3UTR),
+  both the 2-8% scale and the reported reactivities are restricted to that region only
+  -- see `region_coordinates.tsv` below and the comment in `config/config.yaml`
 - `{id}/coverage.csv`, `{id}/specificity_{plus,minus}.csv`, `{id}/counts_minus.csv` -- per-replicate QC
+- `{id}/abundance_{RPKM,TPM}.csv` -- only when `transcript_abundance` lists that mode.
+  Relative transcript abundance from the -DMS RT-stop counts (StructureFold2's
+  `rtsc_abundances.py`), same rationale as `counts_minus.csv` but normalized to
+  RPKM/TPM instead of left as raw counts
 - `{id}/p4p6_react*.png` -- only when `positive_control_name: p4p6`
 - `{id}/heat_correction/reactivity_<suffix>.react` -- only when the
   samplesheet has a `temperature` column. Follows Su et al. 2018 PNAS SI
@@ -73,7 +80,11 @@ both_by_temperature`):
 
 Pipeline-wide, under `qc/`: alignment stats, replicate correlation (when
 there's more than one replicate), base specificity, and (when a positive
-control is configured) its alignment-%.
+control is configured) its alignment-%. `transcript_position_annotations.csv`
+(5UTR/CDS/3UTR + codon position per transcript position) is produced whenever
+`genome` + `annotation_gtf` are set; `region_coordinates.tsv` (each
+transcript's region start/end in original transcript coordinates) is
+additionally produced when `reactivity_region` is set.
 
 ## Testing
 
