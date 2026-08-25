@@ -388,6 +388,13 @@ rule rtsc_to_react:
     -- see the reactivity_region comment above get_plus_rtsc_active -- so
     both the 2-8% scale and the reported reactivities cover only that
     region.
+
+    rtsc_to_react.py's own -trim3 already excludes the trimmed 3' positions
+    from 2-8% scale generation, but still reports a real computed value for
+    them -- mask_trim3_react.py re-NAs those same positions in the output so
+    they're excluded from the reported reactivity too, and (via that NA)
+    from anything downstream that sums/reads non-NA values, e.g. heat
+    correction's scaling-factor calculation. trim3=0 is a no-op.
     """
     input:
         plus=get_plus_rtsc_active,
@@ -410,7 +417,10 @@ rule rtsc_to_react:
         """
         mkdir -p $(dirname {output}) \
             && python {params.workdir}/{params.script} {input.minus} {input.plus} {input.transcriptome} \
-                -name {params.output_prefix} -trim3 {params.trim3} >{log} 2>&1
+                -name {params.output_prefix} -trim3 {params.trim3} >{log} 2>&1 \
+            && python3 workflow/scripts/mask_trim3_react.py \
+                --input {output} --output {output}.masked --trim3 {params.trim3} >>{log} 2>&1 \
+            && mv {output}.masked {output}
         """
 
 
@@ -420,7 +430,8 @@ rule rtsc_to_react_plus_only:
     no -DMS (background) subtraction. Same formula as rtsc_to_react
     otherwise -- natural log, sum-normalize-by-length, 2-8% percentile
     scale, threshold cap -- just applied to one channel instead of
-    subtracting a background channel from it.
+    subtracting a background channel from it. Same trim3 tail-masking as
+    rtsc_to_react -- see that rule's docstring.
     """
     input:
         plus=get_plus_rtsc_for_reactivity,
@@ -440,7 +451,10 @@ rule rtsc_to_react_plus_only:
         """
         mkdir -p $(dirname {output}) \
             && python3 workflow/scripts/rtsc_to_react_plus_only.py {input.plus} {params.transcriptome} \
-                -name {params.output_prefix} -trim3 {params.trim3} >{log} 2>&1
+                -name {params.output_prefix} -trim3 {params.trim3} >{log} 2>&1 \
+            && python3 workflow/scripts/mask_trim3_react.py \
+                --input {output} --output {output}.masked --trim3 {params.trim3} >>{log} 2>&1 \
+            && mv {output}.masked {output}
         """
 
 
@@ -664,7 +678,10 @@ if HEAT_CORRECTION:
             """
             mkdir -p $(dirname {output.react}) \
                 && python {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
-                    -name {params.output_prefix} -restrict {input.restrict} -trim3 {params.trim3} >{log} 2>&1
+                    -name {params.output_prefix} -restrict {input.restrict} -trim3 {params.trim3} >{log} 2>&1 \
+                && python3 workflow/scripts/mask_trim3_react.py \
+                    --input {output.react} --output {output.react}.masked --trim3 {params.trim3} >>{log} 2>&1 \
+                && mv {output.react}.masked {output.react}
             """
 
     rule rtsc_to_react_heat_shared:
@@ -679,6 +696,17 @@ if HEAT_CORRECTION:
         independently drops transcripts with zero +DMS signal or an
         unresolvable normalization scale -- so this is an intermediate
         file, further narrowed by heat_correction_shared_react below.
+
+        A -scale is supplied here, so rtsc_to_react.py's own -trim3 flag
+        would be a no-op (it only affects scale *generation*, skipped
+        entirely when -scale is given) -- the mask_trim3_react.py step
+        below is what actually excludes the trim3'd tail from this file's
+        reported values, using config's trim3 directly rather than relying
+        on the python script's -trim3 flag. Without this, those tail
+        positions would carry real values into heat_correct_reactivity's
+        scaling-factor calculation (react_heat_correct.py's sum_react)
+        even though trim3 already excluded them from the scale that
+        produced heat_correction_lower_temperature.scale above.
         """
         input:
             plus=get_plus_rtsc_for_reactivity,
@@ -698,11 +726,15 @@ if HEAT_CORRECTION:
             script="scripts/StructureFold2/rtsc_to_react.py",
             transcriptome=TRANSCRIPTOME_UPPER,
             output_prefix=f"{config['output_dir']}/{{id}}/heat_correction/reactivity_precorrection",
+            trim3=TRIM3,
         shell:
             """
             mkdir -p $(dirname {output}) \
                 && python {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
-                    -name {params.output_prefix} -restrict {input.restrict} -scale {input.scale} >{log} 2>&1
+                    -name {params.output_prefix} -restrict {input.restrict} -scale {input.scale} >{log} 2>&1 \
+                && python3 workflow/scripts/mask_trim3_react.py \
+                    --input {output} --output {output}.masked --trim3 {params.trim3} >>{log} 2>&1 \
+                && mv {output}.masked {output}
             """
 
     rule heat_correction_shared_react:
@@ -980,13 +1012,17 @@ rule rtsc_to_react_comparison:
         transcriptome=TRANSCRIPTOME_UPPER,
         output_prefix=lambda wc: f"{config['output_dir']}/{wc.id}/norm_comparison/{wc.trim}_{wc.nlog}_{wc.norm}/reactivity",
         trim_flag=lambda wc: "-trim3 125" if wc.trim == "trim125" else "",
+        trim3=lambda wc: 125 if wc.trim == "trim125" else 0,
         ln_flag=lambda wc: "-ln_off" if wc.nlog == "noln" else "",
         nrm_flag=lambda wc: "-nrm_off" if wc.norm == "nonrm" else "",
     shell:
         """
         python {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
             -name {params.output_prefix} \
-            {params.trim_flag} {params.ln_flag} {params.nrm_flag} >{log} 2>&1
+            {params.trim_flag} {params.ln_flag} {params.nrm_flag} >{log} 2>&1 \
+        && python3 workflow/scripts/mask_trim3_react.py \
+            --input {output} --output {output}.masked --trim3 {params.trim3} >>{log} 2>&1 \
+        && mv {output}.masked {output}
         """
 
 
