@@ -25,9 +25,23 @@ import sys
 from Bio import SeqIO
 
 
+def normalize_tx_id(tx_id):
+    """
+    Strip a GFF3-style "transcript:" ID prefix (the Ensembl convention,
+    e.g. ID=transcript:OS01T0100100-01) so transcript ids line up
+    regardless of source: gffread's -x/-w FASTA headers preserve the GFF's
+    raw ID attribute (prefix and all), while a plain Ensembl cdna FASTA
+    (transcript_source: file) does not carry that prefix. Without this,
+    every transcript would fail the cds_coords lookup and fall back to
+    "noncoding".
+    """
+    prefix = "transcript:"
+    return tx_id[len(prefix):] if tx_id.startswith(prefix) else tx_id
+
+
 def load_fasta(path):
-    """Return dict {record.id: str(sequence).upper()}."""
-    return {rec.id: str(rec.seq).upper() for rec in SeqIO.parse(path, "fasta")}
+    """Return dict {normalized record.id: str(sequence).upper()}."""
+    return {normalize_tx_id(rec.id): str(rec.seq).upper() for rec in SeqIO.parse(path, "fasta")}
 
 
 def main():
@@ -75,7 +89,7 @@ def main():
         out.write("transcript_id,position,region,codon_position\n")
 
         for rec in SeqIO.parse(args.tx_fasta, "fasta"):
-            tx_id  = rec.id
+            tx_id  = normalize_tx_id(rec.id)
             tx_len = len(rec.seq)
 
             if tx_id not in cds_coords:

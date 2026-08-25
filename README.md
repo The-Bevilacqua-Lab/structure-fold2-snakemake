@@ -80,7 +80,15 @@ both_by_temperature`):
 
 Pipeline-wide, under `qc/`: alignment stats, replicate correlation (when
 there's more than one replicate), base specificity, and (when a positive
-control is configured) its alignment-%. `transcript_position_annotations.csv`
+control is configured) its alignment-%. `covered_transcripts_upset_replicates.png`
+-- an UpSet plot of transcripts with RT-stop coverage >= 1 in each TRUE
+biological replicate -- is produced whenever there's more than one replicate,
+always on the real per-replicate coverage regardless of `pool_replicates`.
+When `pool_replicates` merges replicates into a different, still-multi-set
+grouping (`both_by_temperature`/`minus_all_plus_by_temperature`; plain
+`both` collapses to a single set, which can't be UpSet-plotted),
+`covered_transcripts_upset_merged.png` is additionally produced over that
+merged grouping. `transcript_position_annotations.csv`
 (5UTR/CDS/3UTR + codon position per transcript position) is produced whenever
 `genome` + `annotation_gtf` are set; `region_coordinates.tsv` (each
 transcript's region start/end in original transcript coordinates) is

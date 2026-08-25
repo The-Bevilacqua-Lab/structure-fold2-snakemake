@@ -12,29 +12,45 @@
 # alignment-% QC in workflow/rules/common.smk applies.
 ############################################################################
 
+
 rule plot_p4p6_react:
     input:
-        f"{config['output_dir']}/{{id}}/reactivity.csv"
+        f"{config['output_dir']}/{{id}}/reactivity.csv",
     output:
-        f"{config['output_dir']}/{{id}}/p4p6_react.png"
+        report(
+            f"{config['output_dir']}/{{id}}/p4p6_react.png",
+            category="Positive control (p4p6)",
+            subcategory="Per-replicate",
+            labels={"id": "{id}"},
+            caption="../report_captions/p4p6_react.rst",
+        ),
+    log:
+        "logs/plot_p4p6_react/{id}.log",
     conda:
         "../envs/plotting.yaml"
     shell:
-        "python3 workflow/scripts/plot_p4p6.py --input {input} --output {output}"
+        "python3 workflow/scripts/plot_p4p6.py --input {input} --output {output} > {log} 2>&1"
 
 
 rule plot_p4p6_all_samples:
     input:
-        expand(f"{config['output_dir']}/{{id}}/reactivity.csv", id=IDS)
+        expand(f"{config['output_dir']}/{{id}}/reactivity.csv", id=IDS),
     output:
-        f"{config['output_dir']}/qc/p4p6_all_samples.png"
+        report(
+            f"{config['output_dir']}/qc/p4p6_all_samples.png",
+            category="Positive control (p4p6)",
+            subcategory="All replicates",
+            caption="../report_captions/p4p6_all_samples.rst",
+        ),
+    log:
+        "logs/plot_p4p6_all_samples.log",
     conda:
         "../envs/plotting.yaml"
     shell:
         "python3 workflow/scripts/plot_p4p6_all_samples.py "
         "--input {input} "
         "--samples {IDS} "
-        "--output {output}"
+        "--output {output} > {log} 2>&1"
 
 
 rule plot_p4p6_react_plus_only:
@@ -43,13 +59,21 @@ rule plot_p4p6_react_plus_only:
     reactivity.
     """
     input:
-        f"{config['output_dir']}/{{id}}/reactivity_plus_only.csv"
+        f"{config['output_dir']}/{{id}}/reactivity_plus_only.csv",
     output:
-        f"{config['output_dir']}/{{id}}/p4p6_react_plus_only.png"
+        report(
+            f"{config['output_dir']}/{{id}}/p4p6_react_plus_only.png",
+            category="Positive control (p4p6)",
+            subcategory="Per-replicate (+DMS only)",
+            labels={"id": "{id}"},
+            caption="../report_captions/p4p6_react_plus_only.rst",
+        ),
+    log:
+        "logs/plot_p4p6_react_plus_only/{id}.log",
     conda:
         "../envs/plotting.yaml"
     shell:
-        "python3 workflow/scripts/plot_p4p6.py --input {input} --output {output}"
+        "python3 workflow/scripts/plot_p4p6.py --input {input} --output {output} > {log} 2>&1"
 
 
 rule plot_p4p6_all_samples_plus_only:
@@ -58,13 +82,20 @@ rule plot_p4p6_all_samples_plus_only:
     subtraction) reactivity.
     """
     input:
-        expand(f"{config['output_dir']}/{{id}}/reactivity_plus_only.csv", id=IDS)
+        expand(f"{config['output_dir']}/{{id}}/reactivity_plus_only.csv", id=IDS),
     output:
-        f"{config['output_dir']}/qc/p4p6_all_samples_plus_only.png"
+        report(
+            f"{config['output_dir']}/qc/p4p6_all_samples_plus_only.png",
+            category="Positive control (p4p6)",
+            subcategory="All replicates (+DMS only)",
+            caption="../report_captions/p4p6_all_samples_plus_only.rst",
+        ),
+    log:
+        "logs/plot_p4p6_all_samples_plus_only.log",
     conda:
         "../envs/plotting.yaml"
     shell:
         "python3 workflow/scripts/plot_p4p6_all_samples.py "
         "--input {input} "
         "--samples {IDS} "
-        "--output {output}"
+        "--output {output} > {log} 2>&1"

@@ -10,6 +10,10 @@ import os
 TRANSCRIPT_SOURCE = config.get("transcript_source", "file")
 TMP = config.get("tmp_dir", "tmp")
 
+# Bases excluded from the 3' end of each transcript when generating the
+# 2-8% normalization scale (see config.yaml's trim3 comment).
+TRIM3 = config.get("trim3", 0)
+
 # Canonical transcriptome FASTA used by all downstream rules.
 # It is produced by the prepare_transcriptome rule below.
 TRANSCRIPTOME = f"{TMP}/resources/transcriptome.fa"
@@ -90,8 +94,10 @@ if TRANSCRIPT_SOURCE == "gffread":
             f"{TMP}/resources/transcriptome_gffread_filtered.fa"
         conda:
             "../envs/biopython.yaml"
+        log:
+            "logs/filter_extracted_seqs/filter.log"
         shell:
-            "python3 workflow/scripts/filter_extracted_seqs.py --input {input} --output {output}"
+            "python3 workflow/scripts/filter_extracted_seqs.py --input {input} --output {output} > {log} 2>&1"
 
 
 rule prepare_transcriptome:
@@ -159,7 +165,7 @@ rule build_bowtie2_index:
     input:
         TRANSCRIPTOME
     output:
-        TRANSCRIPTOME + ".1.bt2"
+        f"{TRANSCRIPTOME}.1.bt2"
     conda:
         "../envs/structurefold.yaml"
     log:
@@ -172,28 +178,35 @@ rule build_bowtie2_index:
 
 rule align_with_bowtie2:
     """
-    Align trimmed reads to the reference transcriptome using Bowtie2
-    via StructureFold2 mapper
+    Align one sequencing run's trimmed reads to the reference transcriptome
+    using Bowtie2 via StructureFold2 mapper. Runs per (sample, run) -- see
+    the "Read preparation" section below for why -- landing in a scratch
+    se_runs/ directory rather than the final per-sample se/ directory;
+    combine_sam_runs merges every run's SAM back into the single per-sample
+    SAM everything downstream expects.
     """
     input:
-        transcriptome_index=TRANSCRIPTOME + ".1.bt2",
-        fastq1=f"{TMP}/reads/trimmed/{{sample}}_trimmed.fastq"
+        transcriptome_index=f"{TRANSCRIPTOME}.1.bt2",
+        fastq1=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.fastq"
     output:
-        sam=f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped.sam",
-        mapping_log=f"{TMP}/output/se/{{sample}}/{{sample}}_mapping_log.txt"
+        sam=f"{TMP}/output/se_runs/{{sample}}_{{run}}/{{sample}}_{{run}}_trimmed_mapped.sam",
+        mapping_log=f"{TMP}/output/se_runs/{{sample}}_{{run}}/{{sample}}_{{run}}_mapping_log.txt"
     params:
-        directory=lambda wc: os.path.abspath(f"{TMP}/output/se/{wc.sample}"),
+        directory=lambda wc: os.path.abspath(f"{TMP}/output/se_runs/{wc.sample}_{wc.run}"),
         abs_index=os.path.abspath(TRANSCRIPTOME),
         abs_log=lambda wc, output: os.path.abspath(output.mapping_log),
         script="scripts/StructureFold2/fastq_mapper.py",
         workdir=f"{workflow.basedir}/workflow"
+    log:
+        "logs/align_with_bowtie2/{sample}_{run}.log"
     conda:
         "../envs/structurefold.yaml"
     message:
-        "Aligning trimmed reads for sample {wildcards.sample} with Bowtie2"
+        "Aligning trimmed reads for sample {wildcards.sample}, run {wildcards.run} with Bowtie2"
     shell:
         r"""
         set -euo pipefail
+        exec > {log} 2>&1
 
         mkdir -p {params.directory}
 
@@ -205,19 +218,96 @@ rule align_with_bowtie2:
         """
 
 
+def get_run_sams_for_sample(wildcards):
+    runs = get_runs_for_sample(wildcards)
+    return [
+        f"{TMP}/output/se_runs/{wildcards.sample}_{r}/{wildcards.sample}_{r}_trimmed_mapped.sam"
+        for r in runs
+    ]
+
+
+def get_run_mapping_logs_for_sample(wildcards):
+    runs = get_runs_for_sample(wildcards)
+    return [
+        f"{TMP}/output/se_runs/{wildcards.sample}_{r}/{wildcards.sample}_{r}_mapping_log.txt"
+        for r in runs
+    ]
+
+
+rule combine_sam_runs:
+    """
+    Merge one sample's per-run SAMs (each independently trimmed and
+    aligned -- see rename_fastq/trim_reads/align_with_bowtie2 above) into
+    the single per-sample SAM every downstream rule expects. All per-run
+    SAMs share an identical header (same Bowtie2 index for every run), so
+    it's safe to take the header from the first run and append every run's
+    alignment records after it -- same approach as add_header_to_filtered_sam
+    below. Per-run mapping logs are combined the same way (raw counts
+    summed, percentages recomputed -- see combine_mapping_logs.py) into one
+    Bowtie2-log-formatted {sample}_mapping_log.txt, so alignment_stats needs
+    no changes.
+    """
+    input:
+        sams=get_run_sams_for_sample,
+        logs=get_run_mapping_logs_for_sample,
+    output:
+        sam=f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped.sam",
+        mapping_log=f"{TMP}/output/se/{{sample}}/{{sample}}_mapping_log.txt",
+    conda:
+        "../envs/samtools.yaml"
+    params:
+        workdir=f"{workflow.basedir}/workflow",
+    log:
+        "logs/combine_sam_runs/{sample}.log"
+    message:
+        "Combining sequencing runs of sample {wildcards.sample} into one SAM"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > {log} 2>&1
+        mkdir -p $(dirname {output.sam})
+
+        first=1
+        for f in {input.sams}; do
+            if [ "$first" -eq 1 ]; then
+                samtools view -H "$f" > {output.sam}
+                first=0
+            fi
+            grep -v '^@' "$f" >> {output.sam}
+        done
+
+        python3 {params.workdir}/scripts/combine_mapping_logs.py {input.logs} -o {output.mapping_log}
+        """
+
+
 # ---------------------------------------------------------------------------
 # Read preparation: rename -> trim
+#
+# Each sequencing run of a sample is renamed, trimmed, and aligned
+# separately (rename_fastq / trim_reads / align_with_bowtie2 above all
+# carry a {run} wildcard alongside {sample}) rather than concatenating raw
+# reads across runs up front -- combine_sam_runs above merges the
+# resulting per-run SAMs back into one per-sample SAM afterward, so every
+# rule downstream of alignment is unaffected and still sees a single
+# {sample}_trimmed_mapped.sam.
 # ---------------------------------------------------------------------------
 
-def get_fastqs(wildcards):
-    """
-    Return every raw fastq (one per sequencing run) for a sample, sorted by
-    run, so rename_fastq can concatenate them into one canonical file.
-    """
+def get_runs_for_sample(wildcards):
+    """Return every sequencing run identifier for a sample, sorted."""
     rows = samples_runs.loc[samples_runs["sample"] == wildcards.sample]
     if rows.empty:
         raise ValueError(f"Sample {wildcards.sample} not found in samplesheet")
-    return rows.sort_values("run")["r1"].tolist()
+    return sorted(rows["run"].unique().tolist())
+
+
+def get_fastq_for_sample_run(wildcards):
+    """Return the single raw fastq for one (sample, run) pair."""
+    rows = samples_runs.loc[
+        (samples_runs["sample"] == wildcards.sample) & (samples_runs["run"] == wildcards.run)
+    ]
+    if rows.empty:
+        raise ValueError(f"No row for sample '{wildcards.sample}', run '{wildcards.run}' in samplesheet")
+    return rows["r1"].iloc[0]
 
 
 def get_samples_by_condition(condition):
@@ -236,17 +326,17 @@ def get_samples_by_condition_and_temperature(condition, temperature):
 
 rule rename_fastq:
     """
-    Concatenate every sequencing run's FASTQ for a sample (usually just one)
-    into a single canonical renamed file for downstream rules.
+    Copy one sequencing run's raw FASTQ for a sample into the canonical
+    per-(sample, run) location for downstream rules.
     """
     input:
-        get_fastqs
+        get_fastq_for_sample_run
     output:
-        f"{TMP}/reads/renamed/{{sample}}.fastq"
+        f"{TMP}/reads/renamed/{{sample}}_{{run}}.fastq"
     log:
-        "logs/rename_fastq/{sample}.log"
+        "logs/rename_fastq/{sample}_{run}.log"
     message:
-        "Renaming FASTQ for sample {wildcards.sample}"
+        "Renaming FASTQ for sample {wildcards.sample}, run {wildcards.run}"
     shell:
         """
         cat {input} > {output} 2> {log}
@@ -255,22 +345,23 @@ rule rename_fastq:
 
 rule trim_reads:
     """
-    Trim reads using the trimming script from StructureFold2
+    Trim reads using the trimming script from StructureFold2. Runs per
+    (sample, run) -- see the section comment above.
     """
     input:
-        reads=f"{TMP}/reads/renamed/{{sample}}.fastq"
+        reads=f"{TMP}/reads/renamed/{{sample}}_{{run}}.fastq"
     output:
-        fastq=f"{TMP}/reads/trimmed/{{sample}}_trimmed.fastq"
+        fastq=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.fastq"
     threads: 4
     conda:
         "../envs/structurefold.yaml"
     params:
-        tmpdir=f"{TMP}/structurefold2/{{sample}}",
+        tmpdir=f"{TMP}/structurefold2/{{sample}}_{{run}}",
         workdir=f"{workflow.basedir}/workflow"
     log:
-        "logs/trim_reads/{sample}.log"
+        "logs/trim_reads/{sample}_{run}.log"
     message:
-        "Trimming reads for sample {wildcards.sample}"
+        "Trimming reads for sample {wildcards.sample}, run {wildcards.run}"
     shell:
         r"""
         set -euo pipefail
@@ -283,7 +374,7 @@ rule trim_reads:
         cd {params.workdir}
         cd ..
         mkdir -p $(dirname {output.fastq})
-        mv {params.tmpdir}/{wildcards.sample}_trimmed.fastq {output.fastq}
+        mv {params.tmpdir}/{wildcards.sample}_{wildcards.run}_trimmed.fastq {output.fastq}
         """
 
 
@@ -311,10 +402,14 @@ rule filter_sam:
         # instead of the caller's cwd (only visible when tmp_dir is itself
         # a relative path, e.g. this test suite's tests/tmp).
         log=lambda wc: os.path.abspath(f"{TMP}/output/se/{wc.sample}/{wc.sample}_trimmed_mapped_filtered.log"),
+    log:
+        "logs/filter_sam/{sample}.log"
     shell:
         """
+        mkdir -p $(dirname {log}) && \
+        LOG_ABS=$(readlink -f {log}) && \
         cd {params.sample_dir} &&
-        python {params.workdir}/{params.script} -max_mismatch 3 -logname {params.log}
+        python {params.workdir}/{params.script} -max_mismatch 3 -logname {params.log} > "$LOG_ABS" 2>&1
         """
 
 
@@ -332,10 +427,14 @@ rule add_header_to_filtered_sam:
         f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped_filtered_with_header.sam"
     conda:
         "../envs/samtools.yaml"
+    log:
+        "logs/add_header_to_filtered_sam/{sample}.log"
     shell:
         """
+        (
         samtools view -H {input.original} > {output}
         grep -v '^@' {input.filtered} >> {output}
+        ) > {log} 2>&1
         """
 
 
@@ -350,10 +449,14 @@ rule filtered_sam_to_sorted_bam:
         bai=f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped_filtered_sorted.bam.bai",
     conda:
         "../envs/samtools.yaml"
+    log:
+        "logs/filtered_sam_to_sorted_bam/{sample}.log"
     shell:
         """
+        (
         samtools view -bS {input} | samtools sort -o {output.bam}
         samtools index {output.bam}
+        ) > {log} 2>&1
         """
 
 
@@ -363,19 +466,20 @@ rule filtered_sam_to_sorted_bam:
 
 rule fastqc:
     """
-    Run FastQC on trimmed reads for each sample
+    Run FastQC on trimmed reads for each sequencing run (trimming now
+    happens per (sample, run) -- see the "Read preparation" comment above).
     """
     input:
-        f"{TMP}/reads/trimmed/{{sample}}_trimmed.fastq"
+        f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.fastq"
     output:
-        html=f"{config['output_dir']}/qc/fastqc/{{sample}}_trimmed_fastqc.html",
-        zip=f"{config['output_dir']}/qc/fastqc/{{sample}}_trimmed_fastqc.zip"
+        html=f"{config['output_dir']}/qc/fastqc/{{sample}}_{{run}}_trimmed_fastqc.html",
+        zip=f"{config['output_dir']}/qc/fastqc/{{sample}}_{{run}}_trimmed_fastqc.zip"
     params:
         outdir=f"{config['output_dir']}/qc/fastqc"
     log:
-        "logs/fastqc/{sample}.log"
+        "logs/fastqc/{sample}_{run}.log"
     message:
-        "Running FastQC on trimmed reads for sample {wildcards.sample}"
+        "Running FastQC on trimmed reads for sample {wildcards.sample}, run {wildcards.run}"
     conda:
         "../envs/qc.yaml"
     shell:
@@ -384,12 +488,22 @@ rule fastqc:
 
 rule multiqc:
     """
-    Aggregate FastQC reports across all samples with MultiQC
+    Aggregate FastQC reports across every (sample, run) with MultiQC
     """
     input:
-        expand(f"{config['output_dir']}/qc/fastqc/{{sample}}_trimmed_fastqc.zip", sample=SAMPLES)
+        expand(
+            f"{config['output_dir']}/qc/fastqc/{{sample}}_{{run}}_trimmed_fastqc.zip",
+            zip,
+            sample=samples_runs["sample"].tolist(),
+            run=samples_runs["run"].tolist(),
+        )
     output:
-        f"{config['output_dir']}/qc/multiqc/multiqc_report.html"
+        report(
+            f"{config['output_dir']}/qc/multiqc/multiqc_report.html",
+            category="QC",
+            subcategory="Alignment",
+            caption="../report_captions/multiqc.rst",
+        )
     params:
         indir=f"{config['output_dir']}/qc/fastqc",
         outdir=f"{config['output_dir']}/qc/multiqc"
@@ -439,18 +553,27 @@ rule aggregate_alignment_stats:
     Combine per-sample alignment stats into a single summary table.
     """
     input:
-        expand(
+        files=expand(
             f"{config['output_dir']}/qc/alignment_stats/{{sample}}_stats.tsv",
             sample=SAMPLES
         )
     output:
-        f"{config['output_dir']}/qc/alignment_stats_summary.tsv"
+        report(
+            f"{config['output_dir']}/qc/alignment_stats_summary.tsv",
+            category="QC",
+            subcategory="Alignment",
+            caption="../report_captions/alignment_stats_summary.rst",
+        )
+    log:
+        "logs/aggregate_alignment_stats.log"
     message:
         "Aggregating alignment stats across all samples"
     shell:
         """
-        head -1 {input[0]} > {output}
-        for f in {input}; do tail -n +2 "$f" >> {output}; done
+        (
+        head -1 {input.files[0]} > {output}
+        for f in {input.files}; do tail -n +2 "$f" >> {output}; done
+        ) > {log} 2>&1
         """
 
 
@@ -507,16 +630,25 @@ if config.get("positive_control_fasta"):
         single summary table.
         """
         input:
-            expand(
+            files=expand(
                 f"{config['output_dir']}/qc/positive_control_alignment/{{sample}}_pct.tsv",
                 sample=SAMPLES
             )
         output:
-            f"{config['output_dir']}/qc/positive_control_alignment_summary.tsv"
+            report(
+                f"{config['output_dir']}/qc/positive_control_alignment_summary.tsv",
+                category="QC",
+                subcategory="Positive control",
+                caption="../report_captions/positive_control_alignment_summary.rst",
+            )
+        log:
+            "logs/aggregate_positive_control_alignment.log"
         message:
             "Aggregating positive-control alignment percentages across all samples"
         shell:
             """
-            head -1 {input[0]} > {output}
-            for f in {input}; do tail -n +2 "$f" >> {output}; done
+            (
+            head -1 {input.files[0]} > {output}
+            for f in {input.files}; do tail -n +2 "$f" >> {output}; done
+            ) > {log} 2>&1
             """
