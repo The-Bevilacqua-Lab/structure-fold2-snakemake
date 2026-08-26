@@ -1,4 +1,5 @@
 # structure-fold2-snakemake
+<img src="resources/sf2_snakemake_logo.png">
 
 ## Overview
 A generalized Snakemake workflow around [StructureFold2](https://github.com/StructureFold2/StructureFold2)
