@@ -14,6 +14,30 @@ TMP = config.get("tmp_dir", "tmp")
 # 2-8% normalization scale (see config.yaml's trim3 comment).
 TRIM3 = config.get("trim3", 0)
 
+# Optional: non-overlapping sliding-window size (nt) for Step 1/2 (Eq. 1-2,
+# workflow/rules/pnas.1807988115.sapp.pdf) raw-reactivity normalization,
+# instead of the default whole-transcript normalization -- see
+# config.yaml's raw_reactivity_window_size comment and
+# calculate_raw_reactivity_windowed in
+# workflow/scripts/StructureFold2/rtsc_to_react.py. None (the default, key
+# omitted) keeps the original whole-transcript behavior.
+RAW_REACTIVITY_WINDOW_SIZE = config.get("raw_reactivity_window_size")
+if RAW_REACTIVITY_WINDOW_SIZE is not None and (
+    not isinstance(RAW_REACTIVITY_WINDOW_SIZE, int) or RAW_REACTIVITY_WINDOW_SIZE <= 0
+):
+    raise ValueError(
+        "config['raw_reactivity_window_size'] must be a positive integer, "
+        f"got {RAW_REACTIVITY_WINDOW_SIZE!r}"
+    )
+# Threaded verbatim into every rule that invokes rtsc_to_react.py (Step 1/2)
+# -- rtsc_to_react, rtsc_to_raw_react, heat_correction_lower_temperature_scale,
+# rtsc_to_react_heat_shared -- as a params value, so all of them stay
+# consistent with each other. Empty string (no flag) when unset, so
+# rtsc_to_react.py falls back to its own default (whole-transcript).
+RAW_REACTIVITY_WINDOW_FLAG = (
+    f"-window_size {RAW_REACTIVITY_WINDOW_SIZE}" if RAW_REACTIVITY_WINDOW_SIZE else ""
+)
+
 # Canonical transcriptome FASTA used by all downstream rules.
 # It is produced by the prepare_transcriptome rule below.
 TRANSCRIPTOME = f"{TMP}/resources/transcriptome.fa"
@@ -310,17 +334,36 @@ def get_fastq_for_sample_run(wildcards):
     return rows["r1"].iloc[0]
 
 
+def _excluded_samples_for_condition(condition):
+    """exclude_samples_plus/exclude_samples_minus (see the Snakefile) for one
+    condition -- used to drop sample(s) from the +DMS/-DMS combining step
+    while leaving them in every per-sample rule untouched."""
+    return EXCLUDE_SAMPLES_PLUS if condition == "plus" else EXCLUDE_SAMPLES_MINUS
+
+
 def get_samples_by_condition(condition):
-    rows = samples.loc[samples["condition"] == condition]
+    excluded = _excluded_samples_for_condition(condition)
+    rows = samples.loc[(samples["condition"] == condition) & (~samples["sample"].isin(excluded))]
     if rows.empty:
-        raise ValueError(f"No samples found for condition '{condition}'")
+        raise ValueError(
+            f"No samples found for condition '{condition}' after applying "
+            f"exclude_samples_{condition} (excluded: {sorted(excluded)})"
+        )
     return rows["sample"].tolist()
 
 
 def get_samples_by_condition_and_temperature(condition, temperature):
-    rows = samples.loc[(samples["condition"] == condition) & (samples["temperature"] == temperature)]
+    excluded = _excluded_samples_for_condition(condition)
+    rows = samples.loc[
+        (samples["condition"] == condition)
+        & (samples["temperature"] == temperature)
+        & (~samples["sample"].isin(excluded))
+    ]
     if rows.empty:
-        raise ValueError(f"No samples found for condition '{condition}' and temperature '{temperature}'")
+        raise ValueError(
+            f"No samples found for condition '{condition}' and temperature '{temperature}' "
+            f"after applying exclude_samples_{condition} (excluded: {sorted(excluded)})"
+        )
     return rows["sample"].tolist()
 
 
@@ -409,7 +452,7 @@ rule filter_sam:
         mkdir -p $(dirname {log}) && \
         LOG_ABS=$(readlink -f {log}) && \
         cd {params.sample_dir} &&
-        python {params.workdir}/{params.script} -max_mismatch 3 -logname {params.log} > "$LOG_ABS" 2>&1
+        python {params.workdir}/{params.script} -max_mismatch 3 -logname {params.log}
         """
 
 
