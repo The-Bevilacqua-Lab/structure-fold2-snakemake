@@ -20,6 +20,14 @@ output_dir: results
 # not needed once reactivity.react/.csv are produced. Default: "tmp".
 tmp_dir: tmp
 
+# Optional. Read-trimming tool: "cutadapt" (default -- StructureFold2's
+# fastq_trimmer.py, workflow/scripts/StructureFold2/fastq_trimmer.py) or
+# "fastp" (workflow/rules/common.smk's trim_reads_fastp, via the
+# snakemake-wrappers bio/fastp wrapper). Both trim the same 3' adapter
+# (GATCGGAAGAGCACACGTCTG); fastp additionally does --trim_poly_g and quality/
+# length filtering. Omit to keep the default (cutadapt).
+trimmer: cutadapt
+
 # ---------------------------------------------------------------------------
 # Transcriptome source: "file" or "gffread"
 #   file    - provide a pre-built transcriptome FASTA via the transcriptome
@@ -40,11 +48,32 @@ transcriptome: path/to/transcriptome.fa
 # gff: path/to/annotation.gff3
 
 # Optional. Genome-level GTF annotation + the genome FASTA above (or a
-# separate one) enable the transcript_position_annotations.tsv output,
+# separate one) enable the transcript_position_annotations.csv output,
 # labelling each transcript position 5UTR/CDS/3UTR with codon position.
 # Requires BOTH keys; omit either to skip this output entirely.
 # genome: path/to/genome.fa
 # annotation_gtf: path/to/annotation.gtf
+
+# ---------------------------------------------------------------------------
+# Optional. Restrict the MAIN reactivity calculation (reactivity.react/.csv
+# only -- NOT reactivity_plus_only, raw_reactivity, heat correction, or any
+# QC output, which still cover the whole transcript) to a single mRNA
+# region: "5UTR", "CDS", or "3UTR". Both the 2-8% normalization scale and
+# the reported reactivities are then computed using ONLY that region's
+# sequence/RT-stop counts, as if the region were the whole transcript --
+# see region_coordinates/region_transcriptome (workflow/rules/annotation.smk)
+# and region_rtsc (workflow/rules/structurefold2.smk) for the mechanics.
+#
+# Requires BOTH genome and annotation_gtf above (used to locate the
+# 5'UTR/CDS/3'UTR boundaries). Transcripts with no match for the region
+# (e.g. noncoding transcripts have no CDS/UTR) are dropped from
+# reactivity.react/.csv entirely. Reported positions restart at 1 within
+# the region rather than the original transcript -- see
+# {output_dir}/region_coordinates.tsv (transcript, region start/end in
+# original transcript coordinates) to map back if needed. Omit entirely to
+# compute reactivity over the whole transcript as usual.
+# ---------------------------------------------------------------------------
+# reactivity_region: 3UTR
 
 # Optional. FASTA of a positive-control sequence (e.g. a construct with a
 # known secondary structure) to append to the transcriptome so it's
@@ -63,6 +92,75 @@ transcriptome: path/to/transcriptome.fa
 # transcriptome before mapping, to soak up off-target reads.
 # ncrna_fasta: path/to/ncrna.fa
 
+# Optional. Number of bases to exclude from the 3' end of each transcript
+# when generating the per-transcript 2-8% normalization scale (StructureFold2
+# rtsc_to_react.py's -trim3; Su et al. 2018 PNAS SI). Guards against RT
+# stop artifacts near the 3' end (e.g. poly-A, adapter proximity, RT
+# fall-off) skewing which positions land in the top 2-8% used to scale the
+# whole transcript. Those same trimmed positions are ALSO reported as NA in
+# the final reactivity (mask_trim3_react.py, see
+# workflow/rules/structurefold2.smk) -- not just excluded from the scale --
+# so they're excluded from heat correction's scaling-factor calculation too.
+# Applies to rtsc_to_react (main reactivity), rtsc_to_react_plus_only, and
+# (when heat correction is enabled) the shared lower-temperature scale plus
+# every per-ID reactivity_precorrection.react computed against it. Default 0
+# (no trimming) if omitted.
+trim3: 0
+
+# ---------------------------------------------------------------------------
+# Optional. Use a non-overlapping sliding window, instead of the whole
+# transcript, for Step 1/2 (Eq. 1-2, natural-log + mean-1 normalization --
+# Su et al. 2018 PNAS SI, workflow/rules/pnas.1807988115.sapp.pdf) of the
+# raw reactivity calculation. When set to a positive integer N,
+# rtsc_to_react.py's -window_size N splits each transcript into
+# non-overlapping N-nt windows STARTING FROM THE 5' END (the final window
+# is whatever's left over if the transcript length isn't an exact multiple
+# of N -- never dropped or merged into its neighbor), and each position is
+# normalized against its OWN window's mean instead of the whole
+# transcript's mean. A window whose +DMS or -DMS RT-stop counts sum to
+# exactly 0 has nothing to normalize against, so its positions are reported
+# as NA in the final reactivity (same treatment as a base that fails the
+# -bases specificity check) rather than a whole transcript being dropped
+# the way calculate_raw_reactivity drops one whose WHOLE-transcript sum is
+# 0 -- see calculate_raw_reactivity_windowed's docstring in
+# rtsc_to_react.py for the exact mechanics.
+#
+# Only Step 1/2 changes -- Step 3 (the 2-8% normalization scale/cap) is
+# still computed and applied over the WHOLE transcript as before, from
+# whatever windowed raw values Step 1/2 produced.
+#
+# Applies everywhere rtsc_to_react.py computes Step 1/2: rtsc_to_react
+# (main reactivity.react), rtsc_to_raw_react, and (when heat correction is
+# enabled) the shared lower-temperature scale plus every per-ID
+# reactivity_precorrection.react computed against it -- NOT
+# rtsc_to_react_plus_only.py (the +DMS-only reactivity, a separate script).
+# Omit entirely (or leave unset) to keep the original whole-transcript
+# normalization.
+# ---------------------------------------------------------------------------
+# raw_reactivity_window_size: 500
+
+# ---------------------------------------------------------------------------
+# Optional. Exclude specific sample(s) from the +DMS or -DMS combining step
+# (combine_rtsc_plus/minus and their pooled/pooled_by_temperature variants,
+# see workflow/rules/structurefold2.smk) without dropping them from the
+# samplesheet entirely -- an excluded sample is still trimmed, mapped, and
+# rtsc-counted individually, and still shows up in per-sample QC
+# (specificity_<sample>.csv, alignment_stats_summary.tsv); it's just left
+# out of whichever channel's combined_plus.rtsc/combined_minus.rtsc feeds
+# the reactivity calculation. Useful for dropping a technically bad
+# replicate (e.g. one flagged by
+# notebooks/dms_rtsc_normalization_diagnostics.ipynb) from the -DMS
+# background without losing its QC trail. Sample names must match the
+# samplesheet's "sample" column exactly. Each key is independent --
+# excluding a sample from exclude_samples_minus does not affect its use in
+# +DMS, and vice versa. Omit either/both (or leave as an empty list) to
+# exclude nothing.
+# ---------------------------------------------------------------------------
+# exclude_samples_plus:
+#   - S1_ambient
+# exclude_samples_minus:
+#   - S4_heat
+
 # ---------------------------------------------------------------------------
 # Replicate pooling before the reactivity calculation.
 #   none  (default) - each replicate keeps its own +DMS and -DMS RT-stop
@@ -76,7 +174,24 @@ transcriptome: path/to/transcriptome.fa
 #   both             - pool BOTH channels across every replicate. Collapses
 #                       to exactly ONE reactivity output for the whole run
 #                       (under the synthetic ID "pooled"), since there's
-#                       only one pair of pooled +DMS/-DMS left.
+#                       only one pair of pooled +DMS/-DMS left. Not
+#                       compatible with a samplesheet "temperature" column
+#                       (see heat_correction_suffix below) -- use
+#                       both_by_temperature instead.
+#   both_by_temperature - like "both", but pools +DMS/-DMS within each
+#                       temperature group separately instead of across the
+#                       whole sheet. Requires a "temperature" samplesheet
+#                       column. Collapses to one reactivity output PER
+#                       temperature (under synthetic IDs
+#                       "pooled_<temperature>"), leaving the two
+#                       temperatures to heat-correct against each other.
+#   minus_all_plus_by_temperature - pool -DMS across EVERY replicate,
+#                       temperature included, into one shared background
+#                       (like "minus"), while +DMS is pooled only WITHIN
+#                       each temperature group (like the +DMS half of
+#                       both_by_temperature). Requires a "temperature"
+#                       samplesheet column; same one-output-per-temperature
+#                       shape as both_by_temperature.
 # See workflow/rules/structurefold2.smk for the full mechanics.
 # ---------------------------------------------------------------------------
 pool_replicates: none
@@ -94,3 +209,52 @@ pool_replicates: none
 #   - name: "Mutant"
 #     output_dir: results_mutant
 #     samplesheet: config/samples_mutant.tsv
+
+# ---------------------------------------------------------------------------
+# Optional. Heat-correct reactivities for the same construct/transcriptome
+# probed at two different temperatures (e.g. a Structure-seq experiment run
+# at 30C and at 55C). Higher temperatures increase overall reagent
+# reactivity independent of any real structural difference, so
+# react_heat_correct.py rescales both temperatures' reactivity.react files
+# onto a common overall-signal scale, per-replicate. Before scaling, both
+# temperatures are first restricted to transcripts with RT-stop coverage
+# >= 1 in the pooled +DMS samples of BOTH temperatures, so the two
+# conditions being corrected share the exact same transcript set (see
+# qc/heat_correction_shared_transcripts.txt).
+#
+# Enabled by adding an optional "temperature" column to the samplesheet
+# (see the Snakefile's samplesheet comment) -- not a config key. This key
+# only controls the output filename suffix (results in
+# {id}/heat_correction/reactivity_<suffix>.react); omit it to keep the
+# default.
+# ---------------------------------------------------------------------------
+# heat_correction_suffix: corrected
+
+# Optional. When true, ALSO run heat correction on every transcript present
+# in both temperatures' plain reactivity.react, with no RT-stop coverage
+# threshold at all -- alongside the normal coverage-qualified correction
+# above -- so the two can be compared (results in
+# {id}/heat_correction_all_transcripts/reactivity_<suffix>.{react,csv}, plus
+# qc/heat_correction_all_transcripts_scale_factors.log next to
+# qc/heat_correction_scale_factors.log for the coverage-qualified run).
+# Only meaningful when heat correction itself is enabled (see above).
+# heat_correction_compare_all_transcripts: true
+
+# Optional. When true, the heat_correct_reactivity scale factors are
+# computed using only positions with reactivity > 0 at BOTH temperatures
+# (excluding exact 0.0s, not just NA) instead of every coverage-qualified
+# position -- see react_heat_correct_positive_only.py in workflow/scripts.
+# The correction itself is still applied to every position as usual; only
+# the factor calculation changes. Only meaningful when heat correction
+# itself is enabled (see above).
+heat_correction_positive_bases_only: false
+
+# ---------------------------------------------------------------------------
+# Optional. Estimate per-transcript relative abundance (RPKM and/or TPM)
+# from the untreated (-DMS) RT-stop counts, via StructureFold2's own
+# rtsc_abundances.py (see calculate_transcript_abundance in
+# workflow/rules/structurefold2.smk). One {id}/abundance_<mode>.csv per
+# requested mode; a single string or a list of "RPKM"/"TPM" are both
+# accepted. Omit entirely (or leave as an empty list) to skip this output.
+# ---------------------------------------------------------------------------
+# transcript_abundance: TPM

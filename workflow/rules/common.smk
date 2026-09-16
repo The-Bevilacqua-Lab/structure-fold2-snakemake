@@ -10,6 +10,14 @@ import os
 TRANSCRIPT_SOURCE = config.get("transcript_source", "file")
 TMP = config.get("tmp_dir", "tmp")
 
+# Read-trimming tool: "cutadapt" (default, StructureFold2's fastq_trimmer.py)
+# or "fastp" -- see config.yaml's trimmer comment.
+TRIMMER = config.get("trimmer", "cutadapt")
+if TRIMMER not in ("cutadapt", "fastp"):
+    raise ValueError(
+        f"config['trimmer'] must be 'cutadapt' or 'fastp', got {TRIMMER!r}"
+    )
+
 # Bases excluded from the 3' end of each transcript when generating the
 # 2-8% normalization scale (see config.yaml's trim3 comment).
 TRIM3 = config.get("trim3", 0)
@@ -385,40 +393,62 @@ rule rename_fastq:
         cat {input} > {output} 2> {log}
         """
 
-
-rule trim_reads:
-    """
-    Trim reads using the trimming script from StructureFold2. Runs per
-    (sample, run) -- see the section comment above.
-    """
-    input:
-        reads=f"{TMP}/reads/renamed/{{sample}}_{{run}}.fastq"
-    output:
-        fastq=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.fastq"
-    threads: 4
-    conda:
-        "../envs/structurefold.yaml"
-    params:
-        tmpdir=f"{TMP}/structurefold2/{{sample}}_{{run}}",
-        workdir=f"{workflow.basedir}/workflow"
-    log:
-        "logs/trim_reads/{sample}_{run}.log"
-    message:
-        "Trimming reads for sample {wildcards.sample}, run {wildcards.run}"
-    shell:
-        r"""
-        set -euo pipefail
-
-        mkdir -p {params.tmpdir}
-        cp {input.reads} {params.tmpdir}/
-
-        cd {params.tmpdir}
-        python {params.workdir}/scripts/StructureFold2/fastq_trimmer.py
-        cd {params.workdir}
-        cd ..
-        mkdir -p $(dirname {output.fastq})
-        mv {params.tmpdir}/{wildcards.sample}_{wildcards.run}_trimmed.fastq {output.fastq}
+if TRIMMER == "fastp":
+    rule trim_reads_fastp:
         """
+        Trim reads using fastp. Runs per (sample, run) -- see the section
+        comment above.
+        """
+        input:
+            sample=[f"{TMP}/reads/renamed/{{sample}}_{{run}}.fastq"]
+        output:
+            trimmed=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.fastq",
+            failed=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.failed.fastq",
+            html=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_fastp.html",
+            json=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_fastp.json"
+        log:
+            "logs/trim_reads_fastp/{sample}_{run}.log"
+        params:
+            adapters="--adapter_sequence GATCGGAAGAGCACACGTCTG",
+            extra="--trim_poly_g"
+        threads: 4
+        wrapper:
+            "v3.3.3/bio/fastp"
+
+if TRIMMER == "cutadapt":
+    rule trim_reads_cutadapt:
+        """
+        Trim reads using the trimming script from StructureFold2. Runs per
+        (sample, run) -- see the section comment above.
+        """
+        input:
+            reads=f"{TMP}/reads/renamed/{{sample}}_{{run}}.fastq"
+        output:
+            fastq=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.fastq"
+        threads: 4
+        conda:
+            "../envs/structurefold.yaml"
+        params:
+            tmpdir=f"{TMP}/structurefold2/{{sample}}_{{run}}",
+            workdir=f"{workflow.basedir}/workflow"
+        log:
+            "logs/trim_reads/{sample}_{run}.log"
+        message:
+            "Trimming reads for sample {wildcards.sample}, run {wildcards.run}"
+        shell:
+            r"""
+            set -euo pipefail
+
+            mkdir -p {params.tmpdir}
+            cp {input.reads} {params.tmpdir}/
+
+            cd {params.tmpdir}
+            python {params.workdir}/scripts/StructureFold2/fastq_trimmer.py
+            cd {params.workdir}
+            cd ..
+            mkdir -p $(dirname {output.fastq})
+            mv {params.tmpdir}/{wildcards.sample}_{wildcards.run}_trimmed.fastq {output.fastq}
+            """
 
 
 # ---------------------------------------------------------------------------

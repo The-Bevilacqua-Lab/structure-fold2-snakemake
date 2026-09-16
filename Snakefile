@@ -11,7 +11,7 @@
 #   snakemake --sdm conda -j 100 --executor cluster-generic \
 #     --cluster-generic-submit-cmd 'sbatch --time=4:00:00 --ntasks=10 --mem=40gb --partition=standard --account=pcb5_cr_default \
 #       --output=slurm_logs/%j.out' \
-#     --configfile config/config.yaml --latency-wait 60
+#     --configfile config/config_in_vitro_nipponbare_23C.yaml --latency-wait 60 --conda-prefix ~/group/kjk6173/local
 #
 # See config/config.yaml for every available config key, and README.md for
 # an overview of what this pipeline does and does not generalize.
@@ -107,6 +107,58 @@ SAMPLES = samples["sample"].tolist()
 MINUS_SAMPLES = samples.loc[samples["condition"] == "minus", "sample"].tolist()
 
 # ---------------------------------------------------------------------------
+# Optional: exclude specific sample(s) from the +DMS or -DMS combining step
+# (combine_rtsc_plus/minus and their _pooled/_pooled_by_temperature variants
+# in workflow/rules/structurefold2.smk) without dropping them from the
+# samplesheet entirely. An excluded sample is still trimmed, mapped, and
+# rtsc-counted individually, and still shows up in per-sample QC
+# (specificity_<sample>.csv, alignment_stats_summary.tsv) -- it's just left
+# out of whichever channel's combined_plus.rtsc/combined_minus.rtsc feeds
+# the reactivity calculation. Useful for dropping a technically bad
+# replicate (e.g. one flagged by
+# notebooks/dms_rtsc_normalization_diagnostics.ipynb) from the -DMS
+# background, or a bad +DMS sample from the treated signal, without losing
+# its QC trail. Each key is independent -- excluding a sample from
+# exclude_samples_minus does not affect its use in +DMS, and vice versa.
+# Omit either/both keys (or leave as an empty list) to exclude nothing.
+#
+# If excluding sample(s) leaves a replicate ID with ZERO remaining samples
+# for a channel (e.g. that ID only had one -DMS sample and it got
+# excluded), that ID is dropped from:
+#   - CORRELATION_PLUS_IDS/CORRELATION_MINUS_IDS below, and so skipped by
+#     the always-per-replicate correlation QC
+#     (rt_stop_replicate_correlation[_minus].png) and the +DMS coverage
+#     UpSet plot;
+#   - IDS_WITH_PLUS/IDS_WITH_MINUS below, and so skipped by the other
+#     per-ID targets that always read the true per-ID channel regardless of
+#     pool_replicates -- coverage.csv, counts_minus.csv,
+#     specificity_plus/minus.csv, abundance_<mode>.csv;
+# since there's nothing left for either to read on that channel for that
+# ID. Its reactivity output still gets computed normally if pool_replicates
+# provides a pooled background for that channel (e.g.
+# "minus"/"both"/"minus_all_plus_by_temperature" for a fully-excluded -DMS
+# replicate) -- reactivity.react/.csv is the one per-ID target that CAN
+# fall back this way, via get_minus_rtsc_for_reactivity/
+# get_plus_rtsc_for_reactivity; otherwise combine_rtsc_plus/minus itself
+# raises a clear ValueError naming the empty ID, since there's no signal
+# left to combine at all.
+# ---------------------------------------------------------------------------
+def _validate_exclude_samples(key):
+    excluded = config.get(key, [])
+    if isinstance(excluded, str):
+        excluded = [excluded]
+    unknown = set(excluded) - set(SAMPLES)
+    if unknown:
+        raise ValueError(
+            f"config[{key!r}] contains sample(s) not in the samplesheet: {sorted(unknown)}"
+        )
+    return set(excluded)
+
+
+EXCLUDE_SAMPLES_PLUS = _validate_exclude_samples("exclude_samples_plus")
+EXCLUDE_SAMPLES_MINUS = _validate_exclude_samples("exclude_samples_minus")
+
+# ---------------------------------------------------------------------------
 # Optional heat correction / temperature-aware pooling
 #
 # An optional 'temperature' samplesheet column (see the samplesheet comment
@@ -184,6 +236,57 @@ else:
 # since that comparison is meaningless once replicates have already been
 # merged together.
 REPLICATE_IDS = samples["ID"].unique().tolist()
+
+
+def _replicate_ids_with_samples(condition):
+    """REPLICATE_IDS subset that still has >=1 non-excluded sample for the
+    given condition, after exclude_samples_plus/exclude_samples_minus.
+    Backs the "always per-replicate, regardless of pool_replicates" QC --
+    rtsc_stop_correlation/_minus and upset_covered_transcripts_replicates
+    (workflow/rules/structurefold2.smk) -- which needs a real, non-empty
+    combine_rtsc_plus/minus output for every ID it includes. A replicate
+    whose entire +DMS or -DMS channel was excluded has nothing left to
+    correlate/cover on that channel, even though it may still get a
+    reactivity output via a pooled background (see
+    get_minus_rtsc_for_reactivity/get_plus_rtsc_for_reactivity)."""
+    excluded = EXCLUDE_SAMPLES_PLUS if condition == "plus" else EXCLUDE_SAMPLES_MINUS
+    return [
+        id_
+        for id_ in REPLICATE_IDS
+        if not samples.loc[
+            (samples["condition"] == condition) & (samples["ID"] == id_), "sample"
+        ]
+        .isin(excluded)
+        .all()
+    ]
+
+
+CORRELATION_PLUS_IDS = _replicate_ids_with_samples("plus")
+CORRELATION_MINUS_IDS = _replicate_ids_with_samples("minus")
+
+
+def _ids_with_samples(condition):
+    """IDS subset that still has a real, non-empty combine_rtsc_plus/minus
+    output for the given channel. Unlike reactivity.react/.csv (which can
+    fall back to a pooled background via get_minus_rtsc_for_reactivity/
+    get_plus_rtsc_for_reactivity when pool_replicates provides one), several
+    per-ID QC/summary targets in get_all_targets below -- coverage.csv,
+    counts_minus.csv, specificity_plus/minus.csv, abundance_<mode>.csv --
+    always read the TRUE per-ID channel regardless of pool_replicates (see
+    calculate_stop_coverage/rtsc_total_stops/calculate_specificity/
+    calculate_transcript_abundance in workflow/rules/structurefold2.smk), so
+    they can't fall back the same way. A synthetic pooled/pooled_<temperature>
+    ID always passes through here unfiltered -- its own
+    combine_rtsc_*_pooled[_by_temperature] rule already applies
+    exclude_samples_plus/minus and raises its own clear error if that whole
+    pooled group ends up empty; only a REAL replicate ID (in REPLICATE_IDS)
+    whose own channel was fully excluded needs to be dropped here."""
+    usable_real = set(_replicate_ids_with_samples(condition))
+    return [id_ for id_ in IDS if id_ not in REPLICATE_IDS or id_ in usable_real]
+
+
+IDS_WITH_PLUS = _ids_with_samples("plus")
+IDS_WITH_MINUS = _ids_with_samples("minus")
 
 # True when pool_replicates has actually collapsed IDS to something other
 # than the true replicate list (i.e. "both", "both_by_temperature", or
@@ -302,35 +405,49 @@ def get_all_targets(wildcards):
     targets = (
         expand("{out}/{id}/reactivity.react", out=out, id=IDS)
         + expand("{out}/{id}/reactivity.csv", out=out, id=IDS)
-        + expand("{out}/{id}/coverage.csv", out=out, id=IDS)
-        + expand("{out}/{id}/counts_minus.csv", out=out, id=IDS)
-        + expand("{out}/{id}/specificity_plus.csv", out=out, id=IDS)
-        + expand("{out}/{id}/specificity_minus.csv", out=out, id=IDS)
+        # coverage.csv/specificity_plus.csv always read the true per-ID +DMS
+        # channel (no pooled fallback -- see IDS_WITH_PLUS above), so an ID
+        # whose entire +DMS was excluded via exclude_samples_plus is skipped
+        # here rather than requesting an impossible target.
+        + expand("{out}/{id}/coverage.csv", out=out, id=IDS_WITH_PLUS)
+        + expand("{out}/{id}/specificity_plus.csv", out=out, id=IDS_WITH_PLUS)
+        # counts_minus.csv/specificity_minus.csv: same, for the -DMS channel
+        # (IDS_WITH_MINUS) -- this is what exclude_samples_minus actually
+        # needed here (see IDS_WITH_MINUS above).
+        + expand("{out}/{id}/counts_minus.csv", out=out, id=IDS_WITH_MINUS)
+        + expand("{out}/{id}/specificity_minus.csv", out=out, id=IDS_WITH_MINUS)
         + expand("{out}/specificity_{sample}.csv", out=out, sample=SAMPLES)
         + [
             f"{out}/qc/alignment_stats_summary.tsv",
             f"{out}/qc/specificity_plot.png",
         ]
         + (
-            [
-                f"{out}/qc/rt_stop_replicate_correlation.png",
-                f"{out}/qc/rt_stop_replicate_correlation_minus.png",
-            ]
-            # Correlation is computed on REPLICATE_IDS (true biological
-            # replicates), not IDS, so gate on that count too -- otherwise
-            # a pooled run (IDS == ["pooled"] or ["pooled_<t>", ...]) would
+            # Correlation is computed on CORRELATION_PLUS_IDS (true
+            # biological replicates that still have a non-excluded +DMS
+            # sample), not IDS, so gate on that count too -- otherwise a
+            # pooled run (IDS == ["pooled"] or ["pooled_<t>", ...]) would
             # skip this QC even when there are multiple real replicates to
             # compare.
-            if len(REPLICATE_IDS) > 1
+            [f"{out}/qc/rt_stop_replicate_correlation.png"]
+            if len(CORRELATION_PLUS_IDS) > 1
+            else []
+        )
+        + (
+            # Same, for the -DMS channel -- gated separately since
+            # exclude_samples_plus/exclude_samples_minus can leave the two
+            # channels with different replicate counts.
+            [f"{out}/qc/rt_stop_replicate_correlation_minus.png"]
+            if len(CORRELATION_MINUS_IDS) > 1
             else []
         )
         + (
             # Always produced (per-replicate, unpooled -- see
-            # upset_covered_transcripts_replicates in structurefold2.smk),
-            # same REPLICATE_IDS-count gate as the correlation plots above:
-            # an UpSet plot of a single set has nothing to overlap.
+            # upset_covered_transcripts_replicates in structurefold2.smk,
+            # which depends only on each replicate's +DMS channel), same
+            # gate as the +DMS correlation plot above: an UpSet plot of a
+            # single set has nothing to overlap.
             [f"{out}/qc/covered_transcripts_upset_replicates.png"]
-            if len(REPLICATE_IDS) > 1
+            if len(CORRELATION_PLUS_IDS) > 1
             else []
         )
         + (
@@ -351,8 +468,11 @@ def get_all_targets(wildcards):
     )
 
     if ABUNDANCE_MODES:
+        # abundance_<mode>.csv is computed from the true per-ID -DMS channel
+        # (see calculate_transcript_abundance in structurefold2.smk), same
+        # IDS_WITH_MINUS gating as counts_minus.csv above.
         targets += expand(
-            "{out}/{id}/abundance_{mode}.csv", out=out, id=IDS, mode=ABUNDANCE_MODES
+            "{out}/{id}/abundance_{mode}.csv", out=out, id=IDS_WITH_MINUS, mode=ABUNDANCE_MODES
         )
 
     if config.get("positive_control_fasta"):
