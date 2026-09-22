@@ -1,0 +1,7 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.7
+  # pinned: newer cutadapt trims some reads differently and drops the repeated name on the "+" line
+  - cutadapt=1.18

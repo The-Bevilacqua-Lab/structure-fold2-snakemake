@@ -1,0 +1,9 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - samtools=1.18
+  - python=3.10
+  - numpy
+  - pandas
+  - matplotlib
