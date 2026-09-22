@@ -69,7 +69,7 @@ container: "docker://continuumio/miniconda3"
 #   temperature – optional; the probing temperature for that row (e.g. "30",
 #                "55", or labels like "low"/"high" -- any two distinct
 #                values). Enables heat correction (react_heat_correct.py,
-#                see workflow/rules/structurefold2.smk) between the two
+#                see workflow/rules/heat_correction.smk) between the two
 #                temperature groups, and unlocks pool_replicates:
 #                both_by_temperature (see below). Every row of a given ID
 #                (its plus row, minus row, and any extra runs) must share
@@ -109,7 +109,7 @@ MINUS_SAMPLES = samples.loc[samples["condition"] == "minus", "sample"].tolist()
 # ---------------------------------------------------------------------------
 # Optional: exclude specific sample(s) from the +DMS or -DMS combining step
 # (combine_rtsc_plus/minus and their _pooled/_pooled_by_temperature variants
-# in workflow/rules/structurefold2.smk) without dropping them from the
+# in workflow/rules/rtsc.smk) without dropping them from the
 # samplesheet entirely. An excluded sample is still trimmed, mapped, and
 # rtsc-counted individually, and still shows up in per-sample QC
 # (specificity_<sample>.csv, alignment_stats_summary.tsv) -- it's just left
@@ -165,7 +165,7 @@ EXCLUDE_SAMPLES_MINUS = _validate_exclude_samples("exclude_samples_minus")
 # above) marks each row's probing temperature. All rows sharing a replicate
 # ID must agree on temperature, and the sheet must have exactly 2 distinct
 # temperature values -- matching react_heat_correct.py's lower/higher
-# two-condition design (workflow/rules/structurefold2.smk). The same
+# two-condition design (workflow/rules/heat_correction.smk). The same
 # grouping also backs pool_replicates: both_by_temperature below.
 # ---------------------------------------------------------------------------
 HEAT_CORRECTION = "temperature" in samples_runs.columns
@@ -190,7 +190,7 @@ if HEAT_CORRECTION:
             f"values, found {DISTINCT_TEMPERATURES}"
         )
 
-# See workflow/rules/structurefold2.smk for the full explanation of what
+# See workflow/rules/rtsc.smk for the full explanation of what
 # each pool_replicates value does to the reactivity calculation.
 POOL_REPLICATES = config.get("pool_replicates", "none")
 
@@ -232,7 +232,7 @@ else:
 # The true biological-replicate ID list, regardless of pool_replicates --
 # unlike IDS, this never collapses to a synthetic "pooled"/"pooled_<temperature>"
 # entry. Used by QC that specifically needs to compare replicates against
-# each other (e.g. rtsc_stop_correlation/_minus in structurefold2.smk),
+# each other (e.g. rtsc_stop_correlation/_minus in replicate_correlation.smk),
 # since that comparison is meaningless once replicates have already been
 # merged together.
 REPLICATE_IDS = samples["ID"].unique().tolist()
@@ -243,7 +243,7 @@ def _replicate_ids_with_samples(condition):
     given condition, after exclude_samples_plus/exclude_samples_minus.
     Backs the "always per-replicate, regardless of pool_replicates" QC --
     rtsc_stop_correlation/_minus and upset_covered_transcripts_replicates
-    (workflow/rules/structurefold2.smk) -- which needs a real, non-empty
+    (workflow/rules/replicate_correlation.smk) -- which needs a real, non-empty
     combine_rtsc_plus/minus output for every ID it includes. A replicate
     whose entire +DMS or -DMS channel was excluded has nothing left to
     correlate/cover on that channel, even though it may still get a
@@ -274,7 +274,7 @@ def _ids_with_samples(condition):
     counts_minus.csv, specificity_plus/minus.csv, abundance_<mode>.csv --
     always read the TRUE per-ID channel regardless of pool_replicates (see
     calculate_stop_coverage/rtsc_total_stops/calculate_specificity/
-    calculate_transcript_abundance in workflow/rules/structurefold2.smk), so
+    calculate_transcript_abundance in workflow/rules/), so
     they can't fall back the same way. A synthetic pooled/pooled_<temperature>
     ID always passes through here unfiltered -- its own
     combine_rtsc_*_pooled[_by_temperature] rule already applies
@@ -293,7 +293,7 @@ IDS_WITH_MINUS = _ids_with_samples("minus")
 # "minus_all_plus_by_temperature" -- see IDS above) -- "minus"/"plus"
 # channel-only pooling leaves IDS == REPLICATE_IDS, since it only changes
 # which .rtsc feeds the reactivity calculation, not the per-ID coverage
-# used by upset_covered_transcripts_merged (workflow/rules/structurefold2.smk).
+# used by upset_covered_transcripts_merged (workflow/rules/coverage.smk).
 MERGED_IDS_DIFFER = IDS != REPLICATE_IDS
 
 if HEAT_CORRECTION:
@@ -313,52 +313,11 @@ if HEAT_CORRECTION:
     # Optional comparison run: also heat-correct every transcript present in
     # both temperature conditions' plain reactivity.react, with no RT-stop
     # coverage threshold at all (see heat_correction_all_transcripts_shared_react
-    # in workflow/rules/structurefold2.smk), alongside the normal
+    # in workflow/rules/heat_correction.smk), alongside the normal
     # coverage-qualified correction -- to see how much the coverage
     # threshold itself changes the correction.
     HEAT_CORRECTION_COMPARE_ALL_TRANSCRIPTS = config.get(
         "heat_correction_compare_all_transcripts", False
-    )
-    # Optional: compute the heat_correct_reactivity scale factors themselves
-    # (not the values they're applied to) using only positions where BOTH
-    # temperatures have reactivity > 0 -- excluding exact 0.0s, not just NA
-    # -- instead of every coverage-qualified position (see
-    # react_heat_correct_positive_only.py in workflow/scripts).
-    HEAT_CORRECTION_POSITIVE_BASES_ONLY = config.get(
-        "heat_correction_positive_bases_only", False
-    )
-
-
-# ---------------------------------------------------------------------------
-# Optional: restrict the MAIN reactivity calculation (reactivity.react/.csv
-# only -- not reactivity_plus_only, raw_reactivity, heat correction, or any
-# QC output) to a single mRNA region instead of the whole transcript. When
-# set, the 2-8% normalization scale and the reported reactivities are both
-# computed using ONLY that region's sequence/RT-stop counts -- see
-# region_coordinates/region_transcriptome (workflow/rules/annotation.smk)
-# and region_rtsc (workflow/rules/structurefold2.smk). Transcripts with no
-# match for the region (e.g. noncoding transcripts have no CDS/UTR) are
-# dropped from reactivity.react/.csv entirely. Reported positions restart at
-# 1 within the region rather than the original transcript -- see
-# {output_dir}/region_coordinates.tsv (transcript, region start/end in
-# original transcript coordinates) to map back if needed.
-#
-# Requires 'genome' + 'annotation_gtf' (used to locate 5'UTR/CDS/3'UTR
-# boundaries, same as transcript_position_annotations.csv). Omit
-# reactivity_region entirely to compute reactivity over the whole transcript
-# as before.
-# ---------------------------------------------------------------------------
-_ALLOWED_REACTIVITY_REGIONS = {"5UTR", "CDS", "3UTR"}
-REACTIVITY_REGION = config.get("reactivity_region")
-if REACTIVITY_REGION is not None and REACTIVITY_REGION not in _ALLOWED_REACTIVITY_REGIONS:
-    raise ValueError(
-        f"config['reactivity_region'] must be one of {sorted(_ALLOWED_REACTIVITY_REGIONS)}, "
-        f"got {REACTIVITY_REGION!r}"
-    )
-if REACTIVITY_REGION and not (config.get("annotation_gtf") and config.get("genome")):
-    raise ValueError(
-        "config['reactivity_region'] requires both 'genome' and 'annotation_gtf' to be "
-        "set, to locate 5'UTR/CDS/3'UTR boundaries (see workflow/rules/annotation.smk)."
     )
 
 
@@ -366,7 +325,7 @@ if REACTIVITY_REGION and not (config.get("annotation_gtf") and config.get("genom
 # Optional: estimate per-transcript relative abundance (RPKM and/or TPM)
 # from the untreated (-DMS) RT-stop counts, via StructureFold2's own
 # rtsc_abundances.py (see calculate_transcript_abundance in
-# workflow/rules/structurefold2.smk) -- same -DMS-channel rationale as
+# workflow/rules/abundance.smk) -- same -DMS-channel rationale as
 # counts_minus.csv (rtsc_total_stops.py's docstring), just converted to a
 # length/library-size-normalized abundance metric instead of DESeq2-style
 # raw counts. One {id}/abundance_<mode>.csv per requested mode. Omit
@@ -385,15 +344,28 @@ if _invalid_abundance_modes:
     )
 
 
-include: "workflow/rules/common.smk"
-include: "workflow/rules/structurefold2.smk"
+include: "workflow/rules/settings.smk"
+include: "workflow/rules/helpers.smk"
+include: "workflow/rules/transcriptome.smk"
+include: "workflow/rules/alignment.smk"
+include: "workflow/rules/read_prep.smk"
+include: "workflow/rules/sam_processing.smk"
+include: "workflow/rules/qc.smk"
+include: "workflow/rules/rtsc.smk"
+include: "workflow/rules/reactivity.smk"
+include: "workflow/rules/heat_correction.smk"
+include: "workflow/rules/coverage.smk"
+include: "workflow/rules/abundance.smk"
+include: "workflow/rules/specificity.smk"
+include: "workflow/rules/replicate_correlation.smk"
 include: "workflow/rules/annotation.smk"
+include: "workflow/rules/metagene.smk"
 
 
 # The p4p6 structure plot rules depend on a hand-annotated coordinate map
 # specific to that one construct (see workflow/rules/positive_control.smk) --
 # only wired in when the positive control actually is p4p6. Any other
-# positive control still gets the generic alignment-% QC from common.smk.
+# positive control still gets the generic alignment-% QC from qc.smk.
 POSITIVE_CONTROL_IS_P4P6 = config.get("positive_control_name") == "p4p6"
 if POSITIVE_CONTROL_IS_P4P6:
 
@@ -420,6 +392,8 @@ def get_all_targets(wildcards):
         + [
             f"{out}/qc/alignment_stats_summary.tsv",
             f"{out}/qc/specificity_plot.png",
+            f"{out}/qc/metagene/metagene_depth.png",
+            f"{out}/qc/metagene/metagene_rtsc.png",
         ]
         + (
             # Correlation is computed on CORRELATION_PLUS_IDS (true
@@ -442,7 +416,7 @@ def get_all_targets(wildcards):
         )
         + (
             # Always produced (per-replicate, unpooled -- see
-            # upset_covered_transcripts_replicates in structurefold2.smk,
+            # upset_covered_transcripts_replicates in coverage.smk,
             # which depends only on each replicate's +DMS channel), same
             # gate as the +DMS correlation plot above: an UpSet plot of a
             # single set has nothing to overlap.
@@ -454,7 +428,7 @@ def get_all_targets(wildcards):
             # Only when pool_replicates has actually merged replicates into
             # a different (and still >1-set) grouping -- see
             # MERGED_IDS_DIFFER above and upset_covered_transcripts_merged
-            # in structurefold2.smk. "both" pooling collapses to the single
+            # in coverage.smk. "both" pooling collapses to the single
             # ID "pooled", which can't be UpSet-plotted against anything.
             [f"{out}/qc/covered_transcripts_upset_merged.png"]
             if MERGED_IDS_DIFFER and len(IDS) > 1
@@ -469,7 +443,7 @@ def get_all_targets(wildcards):
 
     if ABUNDANCE_MODES:
         # abundance_<mode>.csv is computed from the true per-ID -DMS channel
-        # (see calculate_transcript_abundance in structurefold2.smk), same
+        # (see calculate_transcript_abundance in abundance.smk), same
         # IDS_WITH_MINUS gating as counts_minus.csv above.
         targets += expand(
             "{out}/{id}/abundance_{mode}.csv", out=out, id=IDS_WITH_MINUS, mode=ABUNDANCE_MODES
@@ -481,15 +455,16 @@ def get_all_targets(wildcards):
     if POSITIVE_CONTROL_IS_P4P6:
         targets += (
             expand("{out}/{id}/p4p6_react.png", out=out, id=IDS)
-            + expand("{out}/{id}/p4p6_react_plus_only.png", out=out, id=IDS)
             + [
                 f"{out}/qc/p4p6_all_samples.png",
-                f"{out}/qc/p4p6_all_samples_plus_only.png",
             ]
         )
 
     if config.get("specificity_comparison_runs"):
         targets += [f"{out}/qc/specificity_comparison.png"]
+
+    if TRIMMER == "fastp":
+        targets += [f"{out}/qc/multiqc_fastp/multiqc_report.html"]
 
     if HEAT_CORRECTION:
         targets += expand(
