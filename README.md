@@ -51,14 +51,23 @@ Per replicate ID (the single `pooled` ID under `pool_replicates: both`, or
 one `pooled_<temperature>` ID per temperature under `pool_replicates:
 both_by_temperature`):
 - `{id}/reactivity.react`, `.csv` -- +DMS/-DMS subtracted, 2-8%-normalized reactivity.
-  Normally covers the whole transcript; when `reactivity_region` is set (5UTR/CDS/3UTR),
-  both the 2-8% scale and the reported reactivities are restricted to that region only
-  -- see `region_coordinates.tsv` below and the comment in `config/config.yaml`
 - `{id}/coverage.csv`, `{id}/specificity_{plus,minus}.csv`, `{id}/counts_minus.csv` -- per-replicate QC
 - `{id}/abundance_{RPKM,TPM}.csv` -- only when `transcript_abundance` lists that mode.
   Relative transcript abundance from the -DMS RT-stop counts (StructureFold2's
   `rtsc_abundances.py`), same rationale as `counts_minus.csv` but normalized to
   RPKM/TPM instead of left as raw counts
+- `{id}/3prime_bias_correction/` -- only when `3_prime_bias_correction: true`.
+  The +DMS RT-stops of every protein-coding transcript are divided by a
+  global 3' coverage-bias model before the reactivity calculation, so
+  `reactivity.react` (and heat correction) use the corrected counts. The
+  model regresses log(+DMS depth / -DMS depth) on distance from the 3' end,
+  relative position and their interaction, fit on one training set shared
+  by every ID -- the top `3_prime_bias_n_transcripts` protein-coding
+  transcripts by their lowest +DMS coverage across IDs
+  (`qc/3prime_bias_correction/training_transcripts.tsv`) --
+  with a pooled or per-ID (`3_prime_bias_reference`) -DMS reference. QC:
+  `model.tsv` (coefficients, R^2), `coverage_residual_metagene.png`,
+  `rtsc_metagene_before_after.png`
 - `{id}/p4p6_react*.png` -- only when `positive_control_name: p4p6`
 - `{id}/heat_correction/reactivity_<suffix>.react` -- only when the
   samplesheet has a `temperature` column. Follows Su et al. 2018 PNAS SI
@@ -91,9 +100,48 @@ grouping (`both_by_temperature`/`minus_all_plus_by_temperature`; plain
 `covered_transcripts_upset_merged.png` is additionally produced over that
 merged grouping. `transcript_position_annotations.csv`
 (5UTR/CDS/3UTR + codon position per transcript position) is produced whenever
-`genome` + `annotation_gtf` are set; `region_coordinates.tsv` (each
-transcript's region start/end in original transcript coordinates) is
-additionally produced when `reactivity_region` is set.
+`genome` + `annotation_gtf` are set.
+
+## Example
+
+`tests/heat_ambient_full/` is a complete, real run you can point to for
+what the outputs actually look like: all 12 samples from
+`config/samplesheet_rice_heat_ambient.tsv` (3 replicates x plus/minus x
+ambient/heat), full FASTQs (no downsampling), cutadapt trimming, and a
+`gffread` transcriptome -- run with `tests/heat_ambient_full/run_test.sh`
+(or `run_test_cluster.sh` to submit each job to SLURM instead of running
+locally).
+
+Alignment stats (`qc/alignment_stats_summary.tsv`):
+
+| sample | total_reads | unique_mapped_pct | multi_mapped_pct | overall_alignment_pct |
+|---|---|---|---|---|
+| S1_ambient | 57,396,292 | 59.16 | 7.70 | 66.86 |
+| S4_ambient | 66,231,085 | 63.09 | 9.16 | 72.24 |
+| S1_heat | 48,340,689 | 52.25 | 7.76 | 60.02 |
+| S4_heat | 57,980,355 | 59.00 | 9.39 | 68.38 |
+
+`{id}/reactivity.csv`:
+```
+transcript,position,base,reactivity
+Os01t0100100-01,1,G,NA
+Os01t0100100-01,2,T,NA
+```
+
+The `temperature` column triggers heat correction: 10,201 transcripts
+passed the coverage threshold shared by both temperatures
+(`qc/heat_correction_shared_transcripts.txt`), and
+`qc/heat_correction_scale_factors.log` reports the two correction factors
+applied to bring ambient and heat onto a common scale:
+```
+Higher temp values to be scaled by factor: 0.951013924003
+Lower temp values to be scaled by factor: 1.0543066116
+```
+
+And the RT-stop metagene plot (`qc/metagene/metagene_rtsc.png`, one line
+per sample, dashed = -DMS):
+
+<img src="resources/example_metagene_rtsc.png" width="600">
 
 ## Testing
 

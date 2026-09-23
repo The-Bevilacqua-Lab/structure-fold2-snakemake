@@ -8,10 +8,10 @@
 #   snakemake --sdm conda -j 8 --configfile config/config.yaml
 #
 # On a SLURM cluster:
-#   snakemake --sdm conda -j 100 --executor cluster-generic \
-#     --cluster-generic-submit-cmd 'sbatch --time=4:00:00 --ntasks=10 --mem=40gb --partition=standard --account=pcb5_cr_default \
+#   snakemake --sdm apptainer conda -j 100 --executor cluster-generic \
+#     --cluster-generic-submit-cmd 'sbatch --time=4:00:00 --ntasks=10 --mem=16gb --partition=standard --account=pcb5_cr_default \
 #       --output=slurm_logs/%j.out' \
-#     --configfile config/config_in_vitro_nipponbare_23C.yaml --latency-wait 60 --conda-prefix ~/group/kjk6173/local
+#     --configfile config/config_full_run1.yaml --latency-wait 60 --conda-prefix ~/group/kjk6173/local --singularity-prefix ~/group/kjk6173/local
 #
 # See config/config.yaml for every available config key, and README.md for
 # an overview of what this pipeline does and does not generalize.
@@ -362,6 +362,13 @@ include: "workflow/rules/annotation.smk"
 include: "workflow/rules/metagene.smk"
 
 
+# Optional 3' coverage-bias correction of the +DMS RT-stops (see
+# config.yaml's 3_prime_bias_correction comment).
+if BIAS_CORRECTION:
+
+    include: "workflow/rules/bias_correction.smk"
+
+
 # The p4p6 structure plot rules depend on a hand-annotated coordinate map
 # specific to that one construct (see workflow/rules/positive_control.smk) --
 # only wired in when the positive control actually is p4p6. Any other
@@ -465,6 +472,18 @@ def get_all_targets(wildcards):
 
     if TRIMMER == "fastp":
         targets += [f"{out}/qc/multiqc_fastp/multiqc_report.html"]
+
+    if BIAS_CORRECTION:
+        targets += expand(
+            "{out}/{id}/3prime_bias_correction/{f}",
+            out=out,
+            id=IDS,
+            f=[
+                "model.tsv",
+                "coverage_residual_metagene.png",
+                "rtsc_metagene_before_after.png",
+            ],
+        )
 
     if HEAT_CORRECTION:
         targets += expand(
