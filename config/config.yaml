@@ -21,8 +21,8 @@ output_dir: results
 tmp_dir: tmp
 
 # Optional. Read-trimming tool: "cutadapt" (default -- StructureFold2's
-# fastq_trimmer.py, workflow/scripts/StructureFold2/fastq_trimmer.py) or
-# "fastp" (workflow/rules/common.smk's trim_reads_fastp, via the
+# fastq_trimmer.py, workflow/scripts/StructureFold3/fastq_trimmer.py) or
+# "fastp" (workflow/rules/read_prep.smk's trim_reads_fastp, via the
 # snakemake-wrappers bio/fastp wrapper). Both trim the same 3' adapter
 # (GATCGGAAGAGCACACGTCTG); fastp additionally does --trim_poly_g and quality/
 # length filtering. Omit to keep the default (cutadapt).
@@ -33,10 +33,9 @@ trimmer: cutadapt
 #   file    - provide a pre-built transcriptome FASTA via the transcriptome
 #             key below (one sequence per transcript you want reactivity
 #             for). Simplest option if you already have one.
-#   gffread - build the transcriptome from a genome + GFF/GTF annotation:
-#             AGAT first keeps only the longest isoform per gene, then
-#             gffread extracts transcript sequences. Requires genome and
-#             gff below.
+#   gffread - build the transcriptome from a genome + GFF/GTF annotation
+#             with gffread. Requires genome and gff below; every transcript
+#             in the GFF is extracted unless keep_longest_isoform is set.
 # ---------------------------------------------------------------------------
 transcript_source: file
 
@@ -47,6 +46,11 @@ transcriptome: path/to/transcriptome.fa
 # genome: path/to/genome.fa
 # gff: path/to/annotation.gff3
 
+# Optional (transcript_source: gffread only, default false). When true, AGAT
+# first keeps only the longest isoform per gene so gffread produces one
+# transcript per locus; otherwise the GFF is used as given.
+# keep_longest_isoform: true
+
 # Optional. Genome-level GTF annotation + the genome FASTA above (or a
 # separate one) enable the transcript_position_annotations.csv output,
 # labelling each transcript position 5UTR/CDS/3UTR with codon position.
@@ -54,33 +58,12 @@ transcriptome: path/to/transcriptome.fa
 # genome: path/to/genome.fa
 # annotation_gtf: path/to/annotation.gtf
 
-# ---------------------------------------------------------------------------
-# Optional. Restrict the MAIN reactivity calculation (reactivity.react/.csv
-# only -- NOT reactivity_plus_only, raw_reactivity, heat correction, or any
-# QC output, which still cover the whole transcript) to a single mRNA
-# region: "5UTR", "CDS", or "3UTR". Both the 2-8% normalization scale and
-# the reported reactivities are then computed using ONLY that region's
-# sequence/RT-stop counts, as if the region were the whole transcript --
-# see region_coordinates/region_transcriptome (workflow/rules/annotation.smk)
-# and region_rtsc (workflow/rules/structurefold2.smk) for the mechanics.
-#
-# Requires BOTH genome and annotation_gtf above (used to locate the
-# 5'UTR/CDS/3'UTR boundaries). Transcripts with no match for the region
-# (e.g. noncoding transcripts have no CDS/UTR) are dropped from
-# reactivity.react/.csv entirely. Reported positions restart at 1 within
-# the region rather than the original transcript -- see
-# {output_dir}/region_coordinates.tsv (transcript, region start/end in
-# original transcript coordinates) to map back if needed. Omit entirely to
-# compute reactivity over the whole transcript as usual.
-# ---------------------------------------------------------------------------
-# reactivity_region: 3UTR
-
 # Optional. FASTA of a positive-control sequence (e.g. a construct with a
 # known secondary structure) to append to the transcriptome so it's
 # included in alignment and reactivity calculation like any other
 # transcript. positive_control_name must match that sequence's FASTA
 # header exactly -- it drives the generic alignment-% QC in
-# workflow/rules/common.smk. If positive_control_name is literally "p4p6",
+# workflow/rules/qc.smk. If positive_control_name is literally "p4p6",
 # the pipeline ALSO plots reactivity directly onto the known p4p6
 # structure diagram (workflow/rules/positive_control.smk,
 # resources/p4p6/) -- that structure plot only exists for p4p6; any other
@@ -92,57 +75,11 @@ transcriptome: path/to/transcriptome.fa
 # transcriptome before mapping, to soak up off-target reads.
 # ncrna_fasta: path/to/ncrna.fa
 
-# Optional. Number of bases to exclude from the 3' end of each transcript
-# when generating the per-transcript 2-8% normalization scale (StructureFold2
-# rtsc_to_react.py's -trim3; Su et al. 2018 PNAS SI). Guards against RT
-# stop artifacts near the 3' end (e.g. poly-A, adapter proximity, RT
-# fall-off) skewing which positions land in the top 2-8% used to scale the
-# whole transcript. Those same trimmed positions are ALSO reported as NA in
-# the final reactivity (mask_trim3_react.py, see
-# workflow/rules/structurefold2.smk) -- not just excluded from the scale --
-# so they're excluded from heat correction's scaling-factor calculation too.
-# Applies to rtsc_to_react (main reactivity), rtsc_to_react_plus_only, and
-# (when heat correction is enabled) the shared lower-temperature scale plus
-# every per-ID reactivity_precorrection.react computed against it. Default 0
-# (no trimming) if omitted.
-trim3: 0
-
-# ---------------------------------------------------------------------------
-# Optional. Use a non-overlapping sliding window, instead of the whole
-# transcript, for Step 1/2 (Eq. 1-2, natural-log + mean-1 normalization --
-# Su et al. 2018 PNAS SI, workflow/rules/pnas.1807988115.sapp.pdf) of the
-# raw reactivity calculation. When set to a positive integer N,
-# rtsc_to_react.py's -window_size N splits each transcript into
-# non-overlapping N-nt windows STARTING FROM THE 5' END (the final window
-# is whatever's left over if the transcript length isn't an exact multiple
-# of N -- never dropped or merged into its neighbor), and each position is
-# normalized against its OWN window's mean instead of the whole
-# transcript's mean. A window whose +DMS or -DMS RT-stop counts sum to
-# exactly 0 has nothing to normalize against, so its positions are reported
-# as NA in the final reactivity (same treatment as a base that fails the
-# -bases specificity check) rather than a whole transcript being dropped
-# the way calculate_raw_reactivity drops one whose WHOLE-transcript sum is
-# 0 -- see calculate_raw_reactivity_windowed's docstring in
-# rtsc_to_react.py for the exact mechanics.
-#
-# Only Step 1/2 changes -- Step 3 (the 2-8% normalization scale/cap) is
-# still computed and applied over the WHOLE transcript as before, from
-# whatever windowed raw values Step 1/2 produced.
-#
-# Applies everywhere rtsc_to_react.py computes Step 1/2: rtsc_to_react
-# (main reactivity.react), rtsc_to_raw_react, and (when heat correction is
-# enabled) the shared lower-temperature scale plus every per-ID
-# reactivity_precorrection.react computed against it -- NOT
-# rtsc_to_react_plus_only.py (the +DMS-only reactivity, a separate script).
-# Omit entirely (or leave unset) to keep the original whole-transcript
-# normalization.
-# ---------------------------------------------------------------------------
-# raw_reactivity_window_size: 500
 
 # ---------------------------------------------------------------------------
 # Optional. Exclude specific sample(s) from the +DMS or -DMS combining step
 # (combine_rtsc_plus/minus and their pooled/pooled_by_temperature variants,
-# see workflow/rules/structurefold2.smk) without dropping them from the
+# see workflow/rules/rtsc.smk) without dropping them from the
 # samplesheet entirely -- an excluded sample is still trimmed, mapped, and
 # rtsc-counted individually, and still shows up in per-sample QC
 # (specificity_<sample>.csv, alignment_stats_summary.tsv); it's just left
@@ -192,9 +129,48 @@ trim3: 0
 #                       both_by_temperature). Requires a "temperature"
 #                       samplesheet column; same one-output-per-temperature
 #                       shape as both_by_temperature.
-# See workflow/rules/structurefold2.smk for the full mechanics.
+# See workflow/rules/rtsc.smk for the full mechanics.
 # ---------------------------------------------------------------------------
 pool_replicates: none
+
+# ---------------------------------------------------------------------------
+# Optional. Correct the +DMS RT-stops for 3' coverage bias (e.g. from poly(A)
+# selection) before the reactivity calculation, using the -DMS library as the
+# reference (workflow/rules/bias_correction.smk). Per reactivity ID:
+#   1. take the top 3_prime_bias_n_transcripts protein-coding transcripts as
+#      the training set -- ONE set shared by every ID, ranked by each
+#      transcript's lowest +DMS RT-stop coverage across all IDs (written to
+#      {output_dir}/qc/3prime_bias_correction/training_transcripts.tsv);
+#   2. regress log(+DMS depth / -DMS depth) (per-nucleotide samtools depth)
+#      on distance from the 3' end, relative position (position / length)
+#      and their interaction -- one set of coefficients for every transcript;
+#   3. divide every protein-coding transcript's +DMS RT-stops by the fitted
+#      exp(...) bias (then rescale by one global constant so the corrected
+#      total matches the raw total), and use those counts for reactivity.
+# Non-protein-coding transcripts (ncRNA, positive control) are left as-is.
+# QC per ID in {output_dir}/{id}/3prime_bias_correction/: model.tsv
+# (coefficients + R^2), coverage_residual_metagene.png (log-ratio / fit /
+# residual, and depth metagene before/after), rtsc_metagene_before_after.png
+# (+DMS RT-stop metagene before/after vs the -DMS reference).
+# ---------------------------------------------------------------------------
+3_prime_bias_correction: false
+
+# -DMS reference for the model: "pooled" (default) -- every -DMS sample
+# (after exclude_samples_minus), across replicates and temperatures -- or
+# "independent" -- each ID's own -DMS samples (for a pooled/pooled_<temperature>
+# ID, the -DMS samples of that same pool).
+# 3_prime_bias_reference: pooled
+
+# Number of top +DMS-covered protein-coding transcripts to fit on. Default 2500.
+# 3_prime_bias_n_transcripts: 2500
+
+# GTF or GFF3 used to find protein-coding transcripts (transcript_biotype /
+# transcript_type / biotype "protein_coding", or GFF3 mRNA features without a
+# biotype). Defaults to annotation_gtf, then gff.
+# 3_prime_bias_annotation: path/to/annotation.gtf
+
+# Relative-position bins for the QC metagene plots. Default 50.
+# 3_prime_bias_bins: 50
 
 # ---------------------------------------------------------------------------
 # Optional. Combine per-sample base-specificity plots from several separate
@@ -240,21 +216,20 @@ pool_replicates: none
 # Only meaningful when heat correction itself is enabled (see above).
 # heat_correction_compare_all_transcripts: true
 
-# Optional. When true, the heat_correct_reactivity scale factors are
-# computed using only positions with reactivity > 0 at BOTH temperatures
-# (excluding exact 0.0s, not just NA) instead of every coverage-qualified
-# position -- see react_heat_correct_positive_only.py in workflow/scripts.
-# The correction itself is still applied to every position as usual; only
-# the factor calculation changes. Only meaningful when heat correction
-# itself is enabled (see above).
-heat_correction_positive_bases_only: false
 
 # ---------------------------------------------------------------------------
 # Optional. Estimate per-transcript relative abundance (RPKM and/or TPM)
 # from the untreated (-DMS) RT-stop counts, via StructureFold2's own
 # rtsc_abundances.py (see calculate_transcript_abundance in
-# workflow/rules/structurefold2.smk). One {id}/abundance_<mode>.csv per
+# workflow/rules/abundance.smk). One {id}/abundance_<mode>.csv per
 # requested mode; a single string or a list of "RPKM"/"TPM" are both
 # accepted. Omit entirely (or leave as an empty list) to skip this output.
 # ---------------------------------------------------------------------------
 # transcript_abundance: TPM
+
+# ---------------------------------------------------------------------------
+# Optional. Number of relative-position bins (5' to 3', each transcript split
+# into this many equal-width bins) used by the metagene coverage plots
+# (workflow/rules/metagene.smk). Default 100.
+# ---------------------------------------------------------------------------
+# metagene_bins: 100
