@@ -148,10 +148,77 @@ def get_minus_rtsc_for_reactivity(wildcards):
     return f"{TMP}/output/se/{wildcards.id}/combined_minus.rtsc"
 
 
-def get_plus_rtsc_for_reactivity(wildcards):
-    if POOL_REPLICATES in ("plus", "both"):
+def get_raw_plus_rtsc(id):
+    """The uncorrected +DMS .rtsc that feeds id's reactivity. A synthetic
+    pooled/pooled_<temperature> ID always reads its own pooled file (this is
+    also how the heat-correction lower-temperature scale asks for one)."""
+    if not id.startswith("pooled") and POOL_REPLICATES in ("plus", "both"):
         return f"{TMP}/output/se/pooled/combined_plus.rtsc"
-    return f"{TMP}/output/se/{wildcards.id}/combined_plus.rtsc"
+    return f"{TMP}/output/se/{id}/combined_plus.rtsc"
+
+
+def get_plus_rtsc_for_id(id):
+    """+DMS .rtsc used for id's reactivity: the 3' bias-corrected copy when
+    3_prime_bias_correction is on (bias_correction.smk), else the raw one."""
+    if BIAS_CORRECTION:
+        return f"{BIAS_TMP}/{id}/combined_plus_corrected.rtsc"
+    return get_raw_plus_rtsc(id)
+
+
+def get_plus_rtsc_for_reactivity(wildcards):
+    return get_plus_rtsc_for_id(wildcards.id)
+
+
+# ---------------------------------------------------------------------------
+# 3' bias correction helpers (workflow/rules/bias_correction.smk). The
+# samples behind each channel mirror the combine_rtsc_* rules exactly
+# (exclude_samples_plus/minus applied), so the depth the model is fit on
+# comes from the same libraries as the RT-stops it corrects.
+# ---------------------------------------------------------------------------
+
+def _samples_for_condition_and_id(condition, id):
+    if id == "pooled":
+        return get_samples_by_condition(condition)
+    if id.startswith("pooled_"):
+        return get_samples_by_condition_and_temperature(condition, id[len("pooled_") :])
+    excluded = _excluded_samples_for_condition(condition)
+    rows = samples.loc[
+        (samples["condition"] == condition)
+        & (samples["ID"] == id)
+        & (~samples["sample"].isin(excluded))
+    ]
+    if rows.empty:
+        raise ValueError(
+            f"No samples found for condition '{condition}' and ID '{id}' after "
+            f"applying exclude_samples_{condition} (excluded: {sorted(excluded)})"
+        )
+    return rows["sample"].tolist()
+
+
+def get_bias_samples(condition, id):
+    """Samples whose BAMs give the +DMS (sample) or -DMS (reference) depth
+    for id's 3' bias model."""
+    if condition == "plus":
+        if not id.startswith("pooled") and POOL_REPLICATES in ("plus", "both"):
+            return get_samples_by_condition("plus")
+        return _samples_for_condition_and_id("plus", id)
+    if BIAS_REFERENCE == "pooled":
+        return get_samples_by_condition("minus")
+    return _samples_for_condition_and_id("minus", id)
+
+
+def get_bias_bams(wildcards):
+    return [
+        f"{TMP}/output/se/{s}/{s}_trimmed_mapped_filtered_sorted.bam"
+        for s in get_bias_samples(wildcards.condition, wildcards.id)
+    ]
+
+
+def get_bias_reference_minus_rtsc(wildcards):
+    """-DMS RT-stops matching the reference depth, for the before/after plot."""
+    if BIAS_REFERENCE == "pooled":
+        return f"{TMP}/output/se/pooled/combined_minus.rtsc"
+    return f"{TMP}/output/se/{wildcards.id}/combined_minus.rtsc"
 
 
 def get_sams_by_condition_and_id(condition, id):

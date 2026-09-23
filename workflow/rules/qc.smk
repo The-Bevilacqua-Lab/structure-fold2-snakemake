@@ -88,7 +88,7 @@ if TRIMMER == "fastp":
         conda:
             "../envs/qc.yaml"
         shell:
-            "multiqc {input} --outdir {params.outdir} > {log} 2>&1"
+            "multiqc --force {input} --outdir {params.outdir} > {log} 2>&1"
 
 
 rule alignment_stats:

@@ -78,7 +78,7 @@ if HEAT_CORRECTION:
     rule heat_correction_lower_temperature_scale:
         """Generate the 2-8% scale from the pooled lower-temperature data (Su et al. 2018, step 3a)."""
         input:
-            plus=f"{TMP}/output/se/pooled_{DISTINCT_TEMPERATURES[0]}/combined_plus.rtsc",
+            plus=get_plus_rtsc_for_id(f"pooled_{DISTINCT_TEMPERATURES[0]}"),
             minus=f"{TMP}/output/se/pooled_{DISTINCT_TEMPERATURES[0]}/combined_minus.rtsc",
             restrict=f"{config['output_dir']}/qc/heat_correction_shared_transcripts.txt",
         output:
@@ -93,15 +93,11 @@ if HEAT_CORRECTION:
             script="scripts/StructureFold3/rtsc_to_react.py",
             transcriptome=TRANSCRIPTOME_UPPER,
             output_prefix=f"{config['output_dir']}/qc/heat_correction_lower_temperature",
-            trim3=TRIM3,
         shell:
             """
             mkdir -p $(dirname {output.react}) \
                 && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
-                    -name {params.output_prefix} -restrict {input.restrict} -trim3 {params.trim3} >{log} 2>&1 \
-                && python3 workflow/scripts/mask_trim3_react.py \
-                    --input {output.react} --output {output.react}.masked --trim3 {params.trim3} >>{log} 2>&1 \
-                && mv {output.react}.masked {output.react}
+                    -name {params.output_prefix} -restrict {input.restrict} >{log} 2>&1
             """
 
 
@@ -125,15 +121,11 @@ if HEAT_CORRECTION:
             script="scripts/StructureFold3/rtsc_to_react.py",
             transcriptome=TRANSCRIPTOME_UPPER,
             output_prefix=f"{config['output_dir']}/{{id}}/heat_correction/reactivity_precorrection",
-            trim3=TRIM3,
         shell:
             """
             mkdir -p $(dirname {output}) \
                 && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
-                    -name {params.output_prefix} -restrict {input.restrict} -scale {input.scale} >{log} 2>&1 \
-                && python3 workflow/scripts/mask_trim3_react.py \
-                    --input {output} --output {output}.masked --trim3 {params.trim3} >>{log} 2>&1 \
-                && mv {output}.masked {output}
+                    -name {params.output_prefix} -restrict {input.restrict} -scale {input.scale} >{log} 2>&1
             """
 
 
@@ -206,15 +198,12 @@ if HEAT_CORRECTION:
         conda:
             "../envs/rtsc_tools.yaml"
         params:
-            script=(
-                f"{workflow.basedir}/workflow/scripts/StructureFold3/react_heat_correct_positive_only.py"
-                if HEAT_CORRECTION_POSITIVE_BASES_ONLY
-                else f"{workflow.basedir}/workflow/scripts/StructureFold3/react_heat_correct.py"
-            ),
+            workdir=f"{workflow.basedir}/workflow",
+            script="scripts/StructureFold3/react_heat_correct.py",
             suffix=HEAT_CORRECTION_SUFFIX,
         shell:
             """
-            python3 {params.script} \
+            python3 {params.workdir}/{params.script} \
                 -lower {input.lower} \
                 -higher {input.higher} \
                 -suffix {params.suffix} >{log} 2>&1

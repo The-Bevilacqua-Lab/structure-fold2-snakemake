@@ -3,7 +3,7 @@
 ############################################################################
 
 rule rtsc_to_react:
-    """Convert RT-stop counts to 2-8% normalized reactivities (-DMS subtracted); the trim3 tail is masked to NA."""
+    """Convert RT-stop counts to 2-8% normalized reactivities (-DMS subtracted)."""
     input:
         plus=get_plus_rtsc_for_reactivity,
         minus=get_minus_rtsc_for_reactivity,
@@ -20,15 +20,11 @@ rule rtsc_to_react:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold3/rtsc_to_react.py",
         output_prefix=f"{config['output_dir']}/{{id}}/reactivity",
-        trim3=TRIM3,
     shell:
         """
         mkdir -p $(dirname {output}) \
             && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {input.transcriptome} \
-                -name {params.output_prefix} -trim3 {params.trim3} >{log} 2>&1 \
-            && python3 workflow/scripts/mask_trim3_react.py \
-                --input {output} --output {output}.masked --trim3 {params.trim3} >>{log} 2>&1 \
-            && mv {output}.masked {output}
+                -name {params.output_prefix} >{log} 2>&1
         """
 
 

@@ -19,9 +19,28 @@ if TRIMMER not in ("cutadapt", "fastp"):
         f"config['trimmer'] must be 'cutadapt' or 'fastp', got {TRIMMER!r}"
     )
 
-# Bases excluded from the 3' end of each transcript when generating the
-# 2-8% normalization scale (see config.yaml's trim3 comment).
-TRIM3 = config.get("trim3", 0)
+# Optional 3' coverage-bias correction of the +DMS RT-stops before the
+# reactivity calculation -- see config.yaml's 3_prime_bias_correction comment
+# and workflow/rules/bias_correction.smk.
+BIAS_CORRECTION = bool(config.get("3_prime_bias_correction", False))
+BIAS_REFERENCE = config.get("3_prime_bias_reference", "pooled")
+BIAS_N_TRANSCRIPTS = int(config.get("3_prime_bias_n_transcripts", 2500))
+BIAS_BINS = int(config.get("3_prime_bias_bins", 50))
+BIAS_ANNOTATION = config.get(
+    "3_prime_bias_annotation", config.get("annotation_gtf", config.get("gff"))
+)
+BIAS_TMP = f"{TMP}/bias_correction"
+if BIAS_CORRECTION:
+    if BIAS_REFERENCE not in ("pooled", "independent"):
+        raise ValueError(
+            "config['3_prime_bias_reference'] must be 'pooled' or 'independent', "
+            f"got {BIAS_REFERENCE!r}"
+        )
+    if not BIAS_ANNOTATION:
+        raise ValueError(
+            "3_prime_bias_correction needs a GTF/GFF3 to find protein-coding "
+            "transcripts: set 3_prime_bias_annotation (or annotation_gtf/gff)."
+        )
 
 # Canonical transcriptome FASTA used by all downstream rules.
 # It is produced by the prepare_transcriptome rule (transcriptome.smk).
