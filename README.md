@@ -1,14 +1,14 @@
-# structure-fold2-snakemake
 <img src="resources/sf2_snakemake_logo.png">
 
-## Overview
 A generalized Snakemake workflow around [StructureFold2](https://github.com/StructureFold2/StructureFold2)
-to get reactivities from a Structure-seq experiment. Given
+to obtain reactivities from a Structure-seq experiment. Given
 raw/trimmed single-end reads and a transcriptome (or a genome + annotation to
 build one), it aligns with Bowtie2, counts RT-stops per replicate, and
 calculates per-transcript, per-position reactivity. 
 
-# Running the pipeline
+
+
+# How to run structure-fold2-snakemake
 ## Setting up the environment
 
 To run this pipeline, you need Snakemake installed. You can create and activate a conda environment 
@@ -18,31 +18,17 @@ with containing Snakemake with the following command.
 conda env create -f environment.yml
 conda activate structure-fold2-snakemake
 ```
-The pipeline itself handles all of the other software dependencies so don't worry about that. 
+The pipeline itself handles all of the other software dependencies. 
 
 
 ## Quick start
 
 1. Copy `config/config.yaml`, fill in your samplesheet/transcriptome paths
    (every key is documented inline).
-2. Build a samplesheet like `config/samplesheet_example.tsv` (or the
+2. Build a [samplesheet](docs/samplesheet.md) like `config/samplesheet_example.tsv` (or the
    3-column `config/samplesheet_minimal_example.tsv` if you don't need
    replicate grouping or multi-run concatenation -- see below).
 3. `snakemake --sdm conda -j 8 --configfile config/your_config.yaml`
-
-
-## Samplesheet
-
-Tab-separated, one row per (sample, sequencing run):
-
-| column | required | meaning |
-|---|---|---|
-| `sample` | yes | sample identifier, matches your FASTQ naming |
-| `condition` | yes | exactly `plus` (+DMS/treated) or `minus` (-DMS/untreated) |
-| `r1` | yes | path to that (sample, run)'s raw FASTQ |
-| `ID` | no | groups samples into biological replicates (e.g. `rep1`) -- a given ID needs both a `plus` and `minus` row somewhere in the sheet, since the reactivity calculation pairs one condition's ID against the other's. **If omitted**, defaults to each sample's row position *within its condition* (`rep1`, `rep2`, ... independently for `plus` and `minus`) -- i.e. the 1st `minus` row pairs with the 1st `plus` row as one replicate, the 2nd with the 2nd, and so on. This assumes equal `plus`/`minus` counts given in matching order; give an explicit `ID` column if that's not your layout. |
-| `run` | no | distinguishes multiple sequencing runs of the same sample (e.g. resequenced on a second flow cell); same-sample rows get concatenated before trimming. **Defaults to a single run** if omitted. |
-| `temperature` | no | probing temperature for that row (e.g. `30`, `55`, or labels like `low`/`high` -- any two distinct values). **If present**, enables heat correction (`react_heat_correct.py`) between the two temperature groups -- see Outputs below. Every row of a given `ID` must share the same temperature, and exactly two distinct values must appear across the whole sheet. Omit the column entirely to skip heat correction. |
 
 
 ## Outputs (under `output_dir`)
@@ -68,7 +54,9 @@ both_by_temperature`):
   with a pooled or per-ID (`3_prime_bias_reference`) -DMS reference. QC:
   `model.tsv` (coefficients, R^2), `coverage_residual_metagene.png`,
   `rtsc_metagene_before_after.png`
-- `{id}/p4p6_react*.png` -- only when `positive_control_name: p4p6`
+- `{id}/p4p6_react.png` (+ `qc/p4p6_all_samples.png`) -- only when `positive_control_name: p4p6`.
+  p4p6 DMS reactivity drawn on the P4-P6 secondary structure with
+  [RNAvigate](https://rnavigate.readthedocs.io), from `resources/p4p6/p4p6.xrna`
 - `{id}/heat_correction/reactivity_<suffix>.react` -- only when the
   samplesheet has a `temperature` column. Follows Su et al. 2018 PNAS SI
   (Materials and Methods, "Determination of DMS reactivity"): first
@@ -87,6 +75,18 @@ both_by_temperature`):
   paper's step 4) to correct for any remaining temperature-dependent
   reactivity difference (suffix configurable via `heat_correction_suffix`
   in `config/config.yaml`)
+- `depth_matched/{id}/reactivity.csv` -- only when `depth_matching: true`.
+  Reactivity depends on read depth (fewer +DMS RT-stops give a lower average
+  reactivity for the same structure), so every ID's +DMS RT-stops (after the
+  3' bias correction, when on) are thinned per transcript to the smallest
+  total among the IDs, reactivity is recomputed, and each position is averaged
+  over `depth_matching_draws` (default 100) random thinnings
+  (`workflow/scripts/depth_matched_reactivity.py`; it also takes libraries from
+  several runs, as the structure_seq_analysis meta-pipeline uses it). QC under
+  `qc/depth_matched/`: replicate RT-stop correlation of the matched +DMS (first
+  draw) and, for a p4p6 control, ROC curves and AUC before and after matching
+  with the last `depth_matching_roc_trim3` (default 50) nt left out
+  (`p4p6_roc.png`, `p4p6_auc.csv`)
 
 Pipeline-wide, under `qc/`: alignment stats, replicate correlation (when
 there's more than one replicate), base specificity, and (when a positive
