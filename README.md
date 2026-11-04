@@ -31,76 +31,11 @@ The pipeline itself handles all of the other software dependencies.
 3. `snakemake --sdm conda -j 8 --configfile config/your_config.yaml`
 
 
-## Outputs (under `output_dir`)
 
-Per replicate ID (the single `pooled` ID under `pool_replicates: both`, or
-one `pooled_<temperature>` ID per temperature under `pool_replicates:
-both_by_temperature`):
-- `{id}/reactivity.react`, `.csv` -- +DMS/-DMS subtracted, 2-8%-normalized reactivity.
-- `{id}/coverage.csv`, `{id}/specificity_{plus,minus}.csv`, `{id}/counts_minus.csv` -- per-replicate QC
-- `{id}/abundance_{RPKM,TPM}.csv` -- only when `transcript_abundance` lists that mode.
-  Relative transcript abundance from the -DMS RT-stop counts (StructureFold2's
-  `rtsc_abundances.py`), same rationale as `counts_minus.csv` but normalized to
-  RPKM/TPM instead of left as raw counts
-- `{id}/3prime_bias_correction/` -- only when `3_prime_bias_correction: true`.
-  The +DMS RT-stops of every protein-coding transcript are divided by a
-  global 3' coverage-bias model before the reactivity calculation, so
-  `reactivity.react` (and heat correction) use the corrected counts. The
-  model regresses log(+DMS depth / -DMS depth) on distance from the 3' end,
-  relative position and their interaction, fit on one training set shared
-  by every ID -- the top `3_prime_bias_n_transcripts` protein-coding
-  transcripts by their lowest +DMS coverage across IDs
-  (`qc/3prime_bias_correction/training_transcripts.tsv`) --
-  with a pooled or per-ID (`3_prime_bias_reference`) -DMS reference. QC:
-  `model.tsv` (coefficients, R^2), `coverage_residual_metagene.png`,
-  `rtsc_metagene_before_after.png`
-- `{id}/p4p6_react.png` (+ `qc/p4p6_all_samples.png`) -- only when `positive_control_name: p4p6`.
-  p4p6 DMS reactivity drawn on the P4-P6 secondary structure with
-  [RNAvigate](https://rnavigate.readthedocs.io), from `resources/p4p6/p4p6.xrna`
-- `{id}/heat_correction/reactivity_<suffix>.react` -- only when the
-  samplesheet has a `temperature` column. Follows Su et al. 2018 PNAS SI
-  (Materials and Methods, "Determination of DMS reactivity"): first
-  restricted to transcripts with RT-stop coverage >= 1 (AC bases) in the
-  pooled +DMS samples of BOTH temperatures (`qc/heat_correction_shared_transcripts.txt`),
-  then further narrowed to the exact transcript set shared by every
-  resulting `reactivity_precorrection.react` (coverage alone doesn't
-  guarantee this, since the reactivity calculation itself can still drop a
-  transcript per condition -- see `react_intersect_transcripts.py`); each
-  transcript's 2-8% percentile normalization scale is computed ONCE from
-  the pooled lower-temperature data only (`qc/heat_correction_lower_temperature.scale`)
-  and applied to both temperatures, rather than each computing its own
-  scale independently (the paper's step 3a/3b -- otherwise the higher
-  intrinsic DMS reactivity at the higher temperature partly renormalizes
-  itself away); finally rescaled onto a common overall-signal scale (the
-  paper's step 4) to correct for any remaining temperature-dependent
-  reactivity difference (suffix configurable via `heat_correction_suffix`
-  in `config/config.yaml`)
-- `depth_matched/{id}/reactivity.csv` -- only when `depth_matching: true`.
-  Reactivity depends on read depth (fewer +DMS RT-stops give a lower average
-  reactivity for the same structure), so every ID's +DMS RT-stops (after the
-  3' bias correction, when on) are thinned per transcript to the smallest
-  total among the IDs, reactivity is recomputed, and each position is averaged
-  over `depth_matching_draws` (default 100) random thinnings
-  (`workflow/scripts/depth_matched_reactivity.py`; it also takes libraries from
-  several runs, as the structure_seq_analysis meta-pipeline uses it). QC under
-  `qc/depth_matched/`: replicate RT-stop correlation of the matched +DMS (first
-  draw) and, for a p4p6 control, ROC curves and AUC before and after matching
-  with the last `depth_matching_roc_trim3` (default 50) nt left out
-  (`p4p6_roc.png`, `p4p6_auc.csv`)
+### For more information, check out:
+- [3' end bias correction](docs/3_prime_end_bias.md)
+- [Depth matching](docs/depth_matching.md)
 
-Pipeline-wide, under `qc/`: alignment stats, replicate correlation (when
-there's more than one replicate), base specificity, and (when a positive
-control is configured) its alignment-%. `covered_transcripts_upset_replicates.png`
--- an UpSet plot of transcripts with RT-stop coverage >= 1 in each TRUE
-biological replicate -- is produced whenever there's more than one replicate,
-always on the real per-replicate coverage regardless of `pool_replicates`.
-When `pool_replicates` merges replicates into a different, still-multi-set
-grouping (`both_by_temperature`/`minus_all_plus_by_temperature`; plain
-`both` collapses to a single set, which can't be UpSet-plotted),
-`covered_transcripts_upset_merged.png` is additionally produced over that
-merged grouping. `transcript_position_annotations.csv`
-(5UTR/CDS/3UTR + codon position per transcript position) is produced whenever
-`genome` + `annotation_gtf` are set.
 
 ## Example
 
