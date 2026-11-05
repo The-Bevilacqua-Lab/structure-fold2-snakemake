@@ -44,20 +44,22 @@ if TRANSCRIPT_SOURCE == "gffread":
         shell:
             "gffread {input.gff} -g {input.genome} -w {output} > {log} 2>&1"
 
-    rule filter_extracted_seqs:
-        """
-        Keep only those transcripts with a CDS
-        """
-        input:
-            f"{TMP}/resources/transcriptome_gffread.fa"
-        output:
-            f"{TMP}/resources/transcriptome_gffread_filtered.fa"
-        conda:
-            "../envs/biopython.yaml"
-        log:
-            "logs/filter_extracted_seqs/filter.log"
-        shell:
-            "python3 workflow/scripts/filter_extracted_seqs.py --input {input} --output {output} > {log} 2>&1"
+    if CDS_ONLY:
+
+        rule filter_extracted_seqs:
+            """
+            Keep only those transcripts with a CDS (option cds_only).
+            """
+            input:
+                f"{TMP}/resources/transcriptome_gffread.fa"
+            output:
+                f"{TMP}/resources/transcriptome_gffread_filtered.fa"
+            conda:
+                "../envs/biopython.yaml"
+            log:
+                "logs/filter_extracted_seqs/filter.log"
+            shell:
+                "python3 workflow/scripts/filter_extracted_seqs.py --input {input} --output {output} > {log} 2>&1"
 
 
 rule prepare_transcriptome:
