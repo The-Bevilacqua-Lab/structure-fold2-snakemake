@@ -3,7 +3,7 @@
 ############################################################################
 
 # Heat correction between the two temperatures of the samplesheet's optional
-# 'temperature' column (HEAT_CORRECTION etc. are set in the Snakefile).
+# 'temperature' column (HEAT_CORRECTION etc. are set in samples.smk).
 # Transcripts are restricted to those with RT-stop coverage >= 1 in the pooled
 # +DMS samples of both temperatures, and the 2-8% scale is generated once from
 # the pooled lower-temperature data and reused for the higher temperature

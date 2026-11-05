@@ -28,7 +28,7 @@ def get_fastq_for_sample_run(wildcards):
 
 
 def _excluded_samples_for_condition(condition):
-    """exclude_samples_plus/exclude_samples_minus (see the Snakefile) for one
+    """exclude_samples_plus/exclude_samples_minus (see samples.smk) for one
     condition -- used to drop sample(s) from the +DMS/-DMS combining step
     while leaving them in every per-sample rule untouched."""
     return EXCLUDE_SAMPLES_PLUS if condition == "plus" else EXCLUDE_SAMPLES_MINUS
@@ -223,7 +223,7 @@ def get_bias_reference_minus_rtsc(wildcards):
 
 def get_sams_by_condition_and_id(condition, id):
     # "pooled" is the synthetic ID used only when pool_replicates == "both"
-    # (see IDS in the main Snakefile) -- it's not a real ID in the
+    # (see IDS in samples.smk) -- it's not a real ID in the
     # samplesheet, so fall back to every sample of that condition, mirroring
     # get_rtsc_counts_by_condition's pooling behavior. "pooled_<temperature>"
     # is the analogous synthetic ID for pool_replicates ==

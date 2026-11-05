@@ -10,7 +10,7 @@
 #   annotation_gtf – path to a GTF/GFF annotation for that genome
 #
 # If either key is absent the rules are not defined and the output is not
-# added to rule all (see Snakefile).
+# added to rule all (see targets.smk).
 ############################################################################
 
 if config.get("annotation_gtf") and config.get("genome"):

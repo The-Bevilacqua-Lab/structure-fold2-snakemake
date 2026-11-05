@@ -1,16 +1,21 @@
 ############################################################################
 # Positive-control structure plot: p4p6 ONLY.
 #
-# These rules color reactivity directly onto a hand-annotated diagram of
-# the p4p6 (Tetrahymena group I intron P4-P6 domain) secondary structure
-# (resources/p4p6/p4p6_structure.png + p4p6_pairing.txt), using a fixed
-# pixel-coordinate map that is specific to that one construct and image.
+# Colors p4p6 DMS reactivity onto the Tetrahymena group I intron P4-P6
+# domain secondary structure with RNAvigate, using the XRNA drawing in
+# resources/p4p6/p4p6.xrna (structure + nucleotide coordinates). The p4p6
+# construct (resources/p4p6/p4p6.fa) carries 2 extra 5' nucleotides, so
+# reactivity position p is drawn at XRNA nucleotide p - 2.
 ############################################################################
+
+P4P6_XRNA = "resources/p4p6/p4p6.xrna"
 
 
 rule plot_p4p6_react:
+    """p4p6 reactivity on the P4-P6 structure, one ID."""
     input:
-        f"{config['output_dir']}/{{id}}/reactivity.csv",
+        react=f"{config['output_dir']}/{{id}}/reactivity.csv",
+        xrna=P4P6_XRNA,
     output:
         report(
             f"{config['output_dir']}/{{id}}/p4p6_react.png",
@@ -22,14 +27,20 @@ rule plot_p4p6_react:
     log:
         "logs/plot_p4p6_react/{id}.log",
     conda:
-        "../envs/plotting.yaml"
+        "../envs/rnavigate.yaml"
     shell:
-        "python3 workflow/scripts/plot_p4p6.py --input {input} --output {output} > {log} 2>&1"
+        """
+        python3 workflow/scripts/plot_p4p6_rnavigate.py \
+            --inputs {input.react} --labels {wildcards.id} --xrna {input.xrna} \
+            --output {output} >{log} 2>&1
+        """
 
 
 rule plot_p4p6_all_samples:
+    """p4p6 reactivity on the P4-P6 structure, every ID side by side."""
     input:
-        expand(f"{config['output_dir']}/{{id}}/reactivity.csv", id=IDS),
+        react=expand(f"{config['output_dir']}/{{id}}/reactivity.csv", id=IDS),
+        xrna=P4P6_XRNA,
     output:
         report(
             f"{config['output_dir']}/qc/p4p6_all_samples.png",
@@ -40,9 +51,12 @@ rule plot_p4p6_all_samples:
     log:
         "logs/plot_p4p6_all_samples.log",
     conda:
-        "../envs/plotting.yaml"
+        "../envs/rnavigate.yaml"
+    params:
+        labels=IDS,
     shell:
-        "python3 workflow/scripts/plot_p4p6_all_samples.py "
-        "--input {input} "
-        "--samples {IDS} "
-        "--output {output} > {log} 2>&1"
+        """
+        python3 workflow/scripts/plot_p4p6_rnavigate.py \
+            --inputs {input.react} --labels {params.labels} --xrna {input.xrna} \
+            --output {output} >{log} 2>&1
+        """

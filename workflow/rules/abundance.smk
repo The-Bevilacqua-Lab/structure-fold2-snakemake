@@ -3,7 +3,9 @@
 ############################################################################
 
 rule rtsc_total_stops:
-    """Total -DMS RT-stop counts per transcript (raw-count proxy for expression)."""
+    """
+    Total -DMS RT-stop counts per transcript (raw-count proxy for expression).
+    """
     input:
         f"{TMP}/output/se/{{id}}/combined_minus.rtsc",
     output:
@@ -22,7 +24,9 @@ rule rtsc_total_stops:
 
 
 rule calculate_transcript_abundance:
-    """RPKM/TPM abundance from -DMS RT-stops (run in a scratch dir: rtsc_abundances.py can't take an output path)."""
+    """
+    RPKM/TPM abundance from -DMS RT-stops
+    """
     input:
         f"{TMP}/output/se/{{id}}/combined_minus.rtsc",
     output:

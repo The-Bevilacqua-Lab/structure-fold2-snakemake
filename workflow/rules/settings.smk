@@ -20,8 +20,7 @@ if TRIMMER not in ("cutadapt", "fastp"):
     )
 
 # Optional 3' coverage-bias correction of the +DMS RT-stops before the
-# reactivity calculation -- see config.yaml's 3_prime_bias_correction comment
-# and workflow/rules/bias_correction.smk.
+# reactivity calculation
 BIAS_CORRECTION = bool(config.get("3_prime_bias_correction", False))
 BIAS_REFERENCE = config.get("3_prime_bias_reference", "pooled")
 BIAS_N_TRANSCRIPTS = int(config.get("3_prime_bias_n_transcripts", 2500))
@@ -42,11 +41,41 @@ if BIAS_CORRECTION:
             "transcripts: set 3_prime_bias_annotation (or annotation_gtf/gff)."
         )
 
+# Optional depth-matched reactivity (workflow/rules/depth_matching.smk) -- see
+# config.yaml's depth_matching comment.
+DEPTH_MATCHING = bool(config.get("depth_matching", False))
+DEPTH_MATCHING_DRAWS = int(config.get("depth_matching_draws", 100))
+DEPTH_MATCHING_MATCH_MINUS = bool(config.get("depth_matching_match_minus", True))
+DEPTH_MATCHING_ROC_TRIM3 = int(config.get("depth_matching_roc_trim3", 50))
+
 # Canonical transcriptome FASTA used by all downstream rules.
 # It is produced by the prepare_transcriptome rule (transcriptome.smk).
 TRANSCRIPTOME = f"{TMP}/resources/transcriptome.fa"
 
 # Uppercase-only copy of TRANSCRIPTOME, produced by uppercase_transcriptome
-# (transcriptome.smk). Used (instead of TRANSCRIPTOME) by every rule downstream of
-# mapping that checks base identity -- see that rule's docstring for why.
+# (transcriptome.smk).
 TRANSCRIPTOME_UPPER = f"{TMP}/resources/transcriptome_upper.fa"
+
+# ---------------------------------------------------------------------------
+# Optional: estimate per-transcript relative abundance (RPKM and/or TPM)
+# from the untreated (-DMS) RT-stop counts, via StructureFold2's own
+# rtsc_abundances.py 
+# ---------------------------------------------------------------------------
+_ALLOWED_ABUNDANCE_MODES = {"RPKM", "TPM"}
+ABUNDANCE_MODES = config.get("transcript_abundance", [])
+if isinstance(ABUNDANCE_MODES, str):
+    ABUNDANCE_MODES = [ABUNDANCE_MODES]
+ABUNDANCE_MODES = sorted({m.upper() for m in ABUNDANCE_MODES})
+_invalid_abundance_modes = set(ABUNDANCE_MODES) - _ALLOWED_ABUNDANCE_MODES
+if _invalid_abundance_modes:
+    raise ValueError(
+        f"config['transcript_abundance'] must only contain {sorted(_ALLOWED_ABUNDANCE_MODES)}, "
+        f"got {sorted(_invalid_abundance_modes)}"
+    )
+
+
+# The p4p6 structure plot rules depend on a hand-annotated coordinate map
+# specific to that one construct (see workflow/rules/positive_control.smk) --
+# only wired in when the positive control actually is p4p6. Any other
+# positive control still gets the generic alignment-% QC from qc.smk.
+POSITIVE_CONTROL_IS_P4P6 = config.get("positive_control_name") == "p4p6"
