@@ -19,7 +19,7 @@ rule rtsc_total_stops:
     shell:
         """
         mkdir -p $(dirname {output}) \
-            && python3 workflow/scripts/rtsc_total_stops.py --rtsc {input} --output {output} >{log} 2>&1
+            && python3 workflow/scripts/coverage/rtsc_total_stops.py --rtsc {input} --output {output} >{log} 2>&1
         """
 
 

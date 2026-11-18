@@ -10,6 +10,8 @@
 # (Su et al. 2018 PNAS SI, "Determination of DMS reactivity" steps 3a/3b), so
 # the higher temperature does not renormalize away its own heat-induced signal.
 
+from types import SimpleNamespace
+
 if HEAT_CORRECTION:
 
     rule heat_correction_plus_coverage:
@@ -79,7 +81,9 @@ if HEAT_CORRECTION:
         """Generate the 2-8% scale from the pooled lower-temperature data (Su et al. 2018, step 3a)."""
         input:
             plus=get_plus_rtsc_for_id(f"pooled_{DISTINCT_TEMPERATURES[0]}"),
-            minus=f"{TMP}/output/se/pooled_{DISTINCT_TEMPERATURES[0]}/combined_minus.rtsc",
+            # the -DMS background the reactivities use (pooled over everything with pool_replicates
+            # minus / minus_all_plus_by_temperature), pooled over the lower temperature otherwise
+            minus=get_minus_rtsc_for_reactivity(SimpleNamespace(id=f"pooled_{DISTINCT_TEMPERATURES[0]}")),
             restrict=f"{config['output_dir']}/qc/heat_correction_shared_transcripts.txt",
         output:
             react=f"{config['output_dir']}/qc/heat_correction_lower_temperature.react",
@@ -93,11 +97,12 @@ if HEAT_CORRECTION:
             script="scripts/StructureFold3/rtsc_to_react.py",
             transcriptome=TRANSCRIPTOME_UPPER,
             output_prefix=f"{config['output_dir']}/qc/heat_correction_lower_temperature",
+            norm=REACTIVITY_NORM_ARGS,
         shell:
             """
             mkdir -p $(dirname {output.react}) \
                 && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
-                    -name {params.output_prefix} -restrict {input.restrict} >{log} 2>&1
+                    -name {params.output_prefix} -restrict {input.restrict} {params.norm} >{log} 2>&1
             """
 
 
@@ -121,11 +126,12 @@ if HEAT_CORRECTION:
             script="scripts/StructureFold3/rtsc_to_react.py",
             transcriptome=TRANSCRIPTOME_UPPER,
             output_prefix=f"{config['output_dir']}/{{id}}/heat_correction/reactivity_precorrection",
+            norm=REACTIVITY_NORM_ARGS,
         shell:
             """
             mkdir -p $(dirname {output}) \
                 && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
-                    -name {params.output_prefix} -restrict {input.restrict} -scale {input.scale} >{log} 2>&1
+                    -name {params.output_prefix} -restrict {input.restrict} -scale {input.scale} {params.norm} >{log} 2>&1
             """
 
 
@@ -150,26 +156,6 @@ if HEAT_CORRECTION:
         shell:
             """
             python3 {params.script} -in {input} -out {output} >{log} 2>&1
-            """
-
-
-    rule convert_pre_heat_correction_react_to_csv:
-        """Convert pre-correction reactivities to CSV."""
-        input:
-            f"{config['output_dir']}/{{id}}/heat_correction/reactivity.react",
-        output:
-            f"{config['output_dir']}/{{id}}/heat_correction/reactivity.csv",
-        log:
-            "logs/convert_pre_heat_correction_react_to_csv/{id}.log",
-        wildcard_constraints:
-            id="[^/]+",
-        conda:
-            "../envs/biopython.yaml"
-        params:
-            transcriptome=TRANSCRIPTOME_UPPER,
-        shell:
-            """
-            python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome} >{log} 2>&1
             """
 
 
@@ -210,23 +196,23 @@ if HEAT_CORRECTION:
             """
 
 
-    rule convert_heat_corrected_react_to_csv:
-        """Convert heat-corrected reactivities to CSV."""
+    rule heat_corrected_to_rnaframework_xml:
+        """Heat-corrected reactivities -> rnaframework_xml_<suffix>/<transcript>.xml (config rnaframework_xml)."""
         input:
-            f"{config['output_dir']}/{{id}}/heat_correction/reactivity_{HEAT_CORRECTION_SUFFIX}.react",
+            react=f"{config['output_dir']}/{{id}}/heat_correction/reactivity_{HEAT_CORRECTION_SUFFIX}.react",
+            transcriptome=TRANSCRIPTOME_UPPER,
         output:
-            f"{config['output_dir']}/{{id}}/heat_correction/reactivity_{HEAT_CORRECTION_SUFFIX}.csv",
+            directory(f"{config['output_dir']}/{{id}}/heat_correction/rnaframework_xml_{HEAT_CORRECTION_SUFFIX}"),
         log:
-            "logs/convert_heat_corrected_react_to_csv/{id}.log",
+            "logs/heat_corrected_to_rnaframework_xml/{id}.log",
         wildcard_constraints:
             id="[^/]+",
         conda:
             "../envs/biopython.yaml"
-        params:
-            transcriptome=TRANSCRIPTOME_UPPER,
         shell:
             """
-            python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome} >{log} 2>&1
+            python3 workflow/scripts/reactivity/react_to_rnaframework_xml.py --react {input.react} \
+                --fasta {input.transcriptome} --outdir {output} >{log} 2>&1
             """
 
 
@@ -296,21 +282,3 @@ if HEAT_CORRECTION:
                 """
 
 
-        rule convert_heat_correction_all_transcripts_to_csv:
-            """Convert the all-transcripts heat-corrected reactivities to CSV."""
-            input:
-                f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity_{HEAT_CORRECTION_SUFFIX}.react",
-            output:
-                f"{config['output_dir']}/{{id}}/heat_correction_all_transcripts/reactivity_{HEAT_CORRECTION_SUFFIX}.csv",
-            log:
-                "logs/convert_heat_correction_all_transcripts_to_csv/{id}.log",
-            wildcard_constraints:
-                id="[^/]+",
-            conda:
-                "../envs/biopython.yaml"
-            params:
-                transcriptome=TRANSCRIPTOME_UPPER,
-            shell:
-                """
-                python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome} >{log} 2>&1
-                """

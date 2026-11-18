@@ -1,0 +1,11 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  # pinned together: plotnine 0.14.5 imports matplotlib internals removed in
+  # matplotlib 3.11, and predates pandas 3
+  - pandas=2.2.3
+  - matplotlib-base=3.9.4
+  - plotnine=0.14.5
+  - mscorefonts=0.0.1   # Arial (scripts/plot_style.py)

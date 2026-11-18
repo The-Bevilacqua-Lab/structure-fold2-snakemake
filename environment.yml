@@ -11,3 +11,6 @@ dependencies:
       # Snakefile/README) submit jobs to a cluster scheduler; drop it if
       # you only ever run locally.
       - snakemake-executor-plugin-cluster-generic
+      # optional progress dashboard (README "Watching progress"): `snakesee watch`
+      - snakesee
+      - snakemake-logger-plugin-snakesee

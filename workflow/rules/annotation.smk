@@ -13,7 +13,7 @@
 # added to rule all (see targets.smk).
 ############################################################################
 
-if config.get("annotation_gtf") and config.get("genome"):
+if config.get("annotation_gtf") and config.get("genome") and not GENOTYPE_MODE:   # genotype mode: genotypes.smk
 
     rule extract_cds_and_ref_transcriptome:
         """
@@ -69,7 +69,7 @@ if config.get("annotation_gtf") and config.get("genome"):
             "Annotating per-position UTR/CDS regions for all transcripts"
         shell:
             """
-            python3 workflow/scripts/annotate_transcript_positions.py \
+            python3 workflow/scripts/annotation/annotate_transcript_positions.py \
                 --ref_tx_fasta {input.ref_tx} \
                 --cds_fasta {input.cds} \
                 --tx_fasta {input.tx} \

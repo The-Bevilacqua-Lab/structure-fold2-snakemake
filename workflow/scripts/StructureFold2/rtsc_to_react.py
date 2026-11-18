@@ -78,7 +78,7 @@ def read_normalization_scale(normalization_file):
     info = {}
     with open(normalization_file, 'r') as f:
         for line in f:
-            if line.startswith('transcript'):
+            if line.startswith('transcript,'):
                 continue
             else:
                 transcript,value = line.strip().split(',')

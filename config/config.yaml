@@ -1,235 +1,139 @@
-# -----------------------------------------------------------------------
-# structure-fold2-snakemake config template
+# =============================================================================
+# structure-fold2-snakemake config
 #
-# Copy this file, fill in the keys for your organism/experiment, and point
-# --configfile at your copy. Every key is documented below; optional keys
-# can be deleted entirely if you don't need them.
-# -----------------------------------------------------------------------
+# Copy this file, edit it, and run with --configfile <your copy>. Only section 1 is required;
+# everything else shows its default (commented out) and can be left alone.
+# Unsure which options you need? See docs/choosing_options.md.
+# This file is also loaded as the defaults for every run, so keep the uncommented values as they are
+# here and make changes in your copy.
+# =============================================================================
 
-# Required. Tab-separated samplesheet. Columns: sample, condition, r1,
-# and optionally ID (replicate group) and run (sequencing run). See
-# config/samplesheet_example.tsv and the Snakefile's samplesheet comment
-# for the exact column semantics and defaults if ID/run are omitted.
-samplesheet: config/samplesheet_example.tsv
+# --- 1. Required --------------------------------------------------------------
 
-# Required. Where pipeline outputs (reactivity, QC, plots) are written.
-output_dir: results
+samplesheet: config/samplesheet_example.tsv   # TSV: sample, condition, r1 [, ID, run, temperature, genotype] (docs/samplesheet.md)
+output_dir: results                           # results: reactivity, QC, report
+tmp_dir: tmp                                  # intermediates (alignments, RT-stop counts): use scratch space
 
-# Directory for intermediate/scratch files (alignments, trimmed reads,
-# per-replicate RT-stop counts). Can point at scratch storage -- these are
-# not needed once reactivity.react/.csv are produced. Default: "tmp".
-tmp_dir: tmp
-
-# Optional. Read-trimming tool: "cutadapt" (default -- StructureFold2's
-# fastq_trimmer.py, workflow/scripts/StructureFold3/fastq_trimmer.py) or
-# "fastp" (workflow/rules/read_prep.smk's trim_reads_fastp, via the
-# snakemake-wrappers bio/fastp wrapper). Both trim the same 3' adapter
-# (GATCGGAAGAGCACACGTCTG); fastp additionally does --trim_poly_g and quality/
-# length filtering. Omit to keep the default (cutadapt).
-trimmer: cutadapt
-
-# ---------------------------------------------------------------------------
-# Transcriptome source: "file" or "gffread"
-#   file    - provide a pre-built transcriptome FASTA via the transcriptome
-#             key below (one sequence per transcript you want reactivity
-#             for). Simplest option if you already have one.
-#   gffread - build the transcriptome from a genome + GFF/GTF annotation
-#             with gffread. Requires genome and gff below; every transcript
-#             in the GFF is extracted unless keep_longest_isoform is set.
-# ---------------------------------------------------------------------------
+# Reference transcriptome, built one of two ways:
+#   file    - a transcriptome FASTA you already have (first word of each header = transcript ID)
+#   gffread - extracted from a genome FASTA + GFF3/GTF
 transcript_source: file
+transcriptome: path/to/transcriptome.fa       # transcript_source: file
+# genome: path/to/genome.fa                   # transcript_source: gffread
+# gff: path/to/annotation.gff3                # transcript_source: gffread (GFF3 or GTF)
+# cds_only: true                              # gffread: keep only transcripts with a CDS
+# keep_longest_isoform: false                 # gffread: one isoform (the longest) per gene, with AGAT
 
-# Used when transcript_source: file
-transcriptome: path/to/transcriptome.fa
+# --- 2. Reads and alignment ---------------------------------------------------
 
-# Used when transcript_source: gffread
-# genome: path/to/genome.fa
-# gff: path/to/annotation.gff3
+# cutadapt: StructureFold2's fastq_trimmer.py (5' TGAACAGCGACTAGGCTCTTCA + 3' GATCGGAAGAGCACACGTCTG
+#           adapters, Q30, >= 20 nt). fastp: one 3' adapter (fastp_adapter), poly-G tails, >= fastp_min_length.
+trimmer: cutadapt
+# fastp_adapter: GATCGGAAGAGCACACGTCTG
+# fastp_min_length: 20
+# max_mismatch: 3                             # mismatches/indels allowed per alignment (sam_filter.py)
+# keep_intermediates: false                   # true keeps trimmed FASTQs and SAMs (they are large)
 
-# Optional (transcript_source: gffread only, default false). When true, AGAT
-# first keeps only the longest isoform per gene so gffread produces one
-# transcript per locus; otherwise the GFF is used as given.
-# keep_longest_isoform: true
+# --- 3. Replicates ------------------------------------------------------------
 
-# Optional. Genome-level GTF annotation + the genome FASTA above (or a
-# separate one) enable the transcript_position_annotations.csv output,
-# labelling each transcript position 5UTR/CDS/3UTR with codon position.
-# Requires BOTH keys; omit either to skip this output entirely.
-# genome: path/to/genome.fa
-# annotation_gtf: path/to/annotation.gtf
-
-# Optional. FASTA of a positive-control sequence (e.g. a construct with a
-# known secondary structure) to append to the transcriptome so it's
-# included in alignment and reactivity calculation like any other
-# transcript. positive_control_name must match that sequence's FASTA
-# header exactly -- it drives the generic alignment-% QC in
-# workflow/rules/qc.smk. If positive_control_name is literally "p4p6",
-# the pipeline ALSO plots reactivity directly onto the known p4p6
-# structure diagram (workflow/rules/positive_control.smk,
-# resources/p4p6/) -- that structure plot only exists for p4p6; any other
-# positive control still gets the alignment-% QC but no structure plot.
-# positive_control_fasta: resources/p4p6/p4p6.fa
-# positive_control_name: p4p6
-
-# Optional. FASTA of ncRNA sequences (e.g. rRNAs/tRNAs) to append to the
-# transcriptome before mapping, to soak up off-target reads.
-# ncrna_fasta: path/to/ncrna.fa
-
-
-# ---------------------------------------------------------------------------
-# Optional. Exclude specific sample(s) from the +DMS or -DMS combining step
-# (combine_rtsc_plus/minus and their pooled/pooled_by_temperature variants,
-# see workflow/rules/rtsc.smk) without dropping them from the
-# samplesheet entirely -- an excluded sample is still trimmed, mapped, and
-# rtsc-counted individually, and still shows up in per-sample QC
-# (specificity_<sample>.csv, alignment_stats_summary.tsv); it's just left
-# out of whichever channel's combined_plus.rtsc/combined_minus.rtsc feeds
-# the reactivity calculation. Useful for dropping a technically bad
-# replicate (e.g. one flagged by
-# notebooks/dms_rtsc_normalization_diagnostics.ipynb) from the -DMS
-# background without losing its QC trail. Sample names must match the
-# samplesheet's "sample" column exactly. Each key is independent --
-# excluding a sample from exclude_samples_minus does not affect its use in
-# +DMS, and vice versa. Omit either/both (or leave as an empty list) to
-# exclude nothing.
-# ---------------------------------------------------------------------------
-# exclude_samples_plus:
-#   - S1_ambient
-# exclude_samples_minus:
-#   - S4_heat
-
-# ---------------------------------------------------------------------------
-# Replicate pooling before the reactivity calculation.
-#   none  (default) - each replicate keeps its own +DMS and -DMS RT-stop
-#                      counts; one reactivity output per replicate (ID).
-#   minus            - pool -DMS across every replicate into one shared
-#                       background; +DMS stays per-replicate. Still one
-#                       reactivity output per replicate.
-#   plus             - pool +DMS across every replicate into one shared
-#                       treated signal; -DMS stays per-replicate. Still one
-#                       reactivity output per replicate.
-#   both             - pool BOTH channels across every replicate. Collapses
-#                       to exactly ONE reactivity output for the whole run
-#                       (under the synthetic ID "pooled"), since there's
-#                       only one pair of pooled +DMS/-DMS left. Not
-#                       compatible with a samplesheet "temperature" column
-#                       (see heat_correction_suffix below) -- use
-#                       both_by_temperature instead.
-#   both_by_temperature - like "both", but pools +DMS/-DMS within each
-#                       temperature group separately instead of across the
-#                       whole sheet. Requires a "temperature" samplesheet
-#                       column. Collapses to one reactivity output PER
-#                       temperature (under synthetic IDs
-#                       "pooled_<temperature>"), leaving the two
-#                       temperatures to heat-correct against each other.
-#   minus_all_plus_by_temperature - pool -DMS across EVERY replicate,
-#                       temperature included, into one shared background
-#                       (like "minus"), while +DMS is pooled only WITHIN
-#                       each temperature group (like the +DMS half of
-#                       both_by_temperature). Requires a "temperature"
-#                       samplesheet column; same one-output-per-temperature
-#                       shape as both_by_temperature.
-# See workflow/rules/rtsc.smk for the full mechanics.
-# ---------------------------------------------------------------------------
+# What the reactivity is calculated from (docs/choosing_options.md#replicates):
+#   none   - each replicate ID: its own +DMS and its own -DMS (default)
+#   minus  - each replicate ID's +DMS, all -DMS samples pooled into one background
+#   plus   - all +DMS pooled, each replicate's own -DMS
+#   both   - everything pooled: one reactivity, ID "pooled"
+#   both_by_temperature           - (temperature column) both pooled within each temperature: IDs "pooled_<t>"
+#   minus_all_plus_by_temperature - (temperature column) -DMS pooled over everything, +DMS within each temperature
 pool_replicates: none
 
-# ---------------------------------------------------------------------------
-# Optional. Correct the +DMS RT-stops for 3' coverage bias (e.g. from poly(A)
-# selection) before the reactivity calculation, using the -DMS library as the
-# reference (workflow/rules/bias_correction.smk). Per reactivity ID:
-#   1. take the top 3_prime_bias_n_transcripts protein-coding transcripts as
-#      the training set -- ONE set shared by every ID, ranked by each
-#      transcript's lowest +DMS RT-stop coverage across all IDs (written to
-#      {output_dir}/qc/3prime_bias_correction/training_transcripts.tsv);
-#   2. regress log(+DMS depth / -DMS depth) (per-nucleotide samtools depth)
-#      on distance from the 3' end, relative position (position / length)
-#      and their interaction -- one set of coefficients for every transcript;
-#   3. divide every protein-coding transcript's +DMS RT-stops by the fitted
-#      exp(...) bias (then rescale by one global constant so the corrected
-#      total matches the raw total), and use those counts for reactivity.
-# Non-protein-coding transcripts (ncRNA, positive control) are left as-is.
-# QC per ID in {output_dir}/{id}/3prime_bias_correction/: model.tsv
-# (coefficients + R^2), coverage_residual_metagene.png (log-ratio / fit /
-# residual, and depth metagene before/after), rtsc_metagene_before_after.png
-# (+DMS RT-stop metagene before/after vs the -DMS reference).
-# ---------------------------------------------------------------------------
+# Samples left out of the +DMS or -DMS pool / replicate (still aligned and in the per-sample QC)
+# exclude_samples_plus: [S1]
+# exclude_samples_minus: [S4]
+
+# --- 4. Reactivity ------------------------------------------------------------
+
+# Scaling of each channel's ln(stops + 1) before the -DMS subtraction (docs/methods.md §8):
+#   all - mean over all positions (StructureFold2)
+#   gu  - mean over G/U positions, which DMS leaves unmodified (transcripts with < reactivity_min_gu G/U are skipped)
+# reactivity_normalization: all
+# reactivity_min_gu: 20
+
+# Divide +DMS RT stops by a fitted 3' coverage bias, e.g. after poly(A) selection (docs/3_prime_end_bias.md)
 3_prime_bias_correction: false
+# 3_prime_bias_reference: pooled              # -DMS depth reference: pooled (all -DMS) or independent (each ID's own)
+# 3_prime_bias_training: top_n                # top_n, or all_covered (every transcript >= 3_prime_bias_min_coverage in all IDs)
+# 3_prime_bias_n_transcripts: 2500            # top_n: training transcripts
+# 3_prime_bias_min_coverage: 1                # all_covered: coverage threshold
+# 3_prime_bias_annotation: path/to/annotation.gtf   # protein_coding biotypes; default annotation_gtf, then gff
+# 3_prime_bias_bins: 50                       # bins in the QC metagene plots
 
-# -DMS reference for the model: "pooled" (default) -- every -DMS sample
-# (after exclude_samples_minus), across replicates and temperatures -- or
-# "independent" -- each ID's own -DMS samples (for a pooled/pooled_<temperature>
-# ID, the -DMS samples of that same pool).
-# 3_prime_bias_reference: pooled
+# Depth-matched reactivity, for comparing libraries of different depth (docs/depth_matching.md)
+# depth_matching: false
+# depth_matching_draws: 100
+# depth_matching_match_minus: true            # also thin the -DMS backgrounds to the same depth
+# depth_matching_shards: 1                    # > 1: split into that many one-core cluster jobs (same result)
+# depth_matching_roc_trim3: 50
+# depth_matching_normalization: all           # default: reactivity_normalization
+# depth_matching_min_gu: 20                   # default: reactivity_min_gu
 
-# Number of top +DMS-covered protein-coding transcripts to fit on. Default 2500.
-# 3_prime_bias_n_transcripts: 2500
+# Heat correction is switched on by a 'temperature' column in the samplesheet (two values), not here.
+# heat_correction_suffix: corrected           # -> {id}/heat_correction/reactivity_corrected.csv
+# heat_correction_compare_all_transcripts: false   # also correct every transcript, without the coverage filter
 
-# GTF or GFF3 used to find protein-coding transcripts (transcript_biotype /
-# transcript_type / biotype "protein_coding", or GFF3 mRNA features without a
-# biotype). Defaults to annotation_gtf, then gff.
-# 3_prime_bias_annotation: path/to/annotation.gtf
+# --- 5. Extra sequences in the reference --------------------------------------
 
-# Relative-position bins for the QC metagene plots. Default 50.
-# 3_prime_bias_bins: 50
+# A spike-in of known structure. Name = its FASTA ID; "p4p6" adds the P4-P6 structure plots and ROC.
+# positive_control_fasta: resources/p4p6/p4p6.fa
+# positive_control_name: p4p6
+# p4p6_roc_trim3: 50                          # last N (3') positions left out of the ROC
 
-# ---------------------------------------------------------------------------
-# Optional. Combine per-sample base-specificity plots from several separate
-# pipeline runs (e.g. different organisms/genotypes/conditions, each with
-# its own output_dir + samplesheet) into one comparison figure. Omit
-# entirely if you only care about a single run's own specificity_plot.png.
-# ---------------------------------------------------------------------------
-# specificity_comparison_runs:
-#   - name: "Wild-type"
-#     output_dir: results_wildtype
-#     samplesheet: config/samples_wildtype.tsv
-#   - name: "Mutant"
-#     output_dir: results_mutant
-#     samplesheet: config/samples_mutant.tsv
+# rRNA / other ncRNA / lncRNA sets, so their reads map there instead of to similar mRNA, and are
+# counted in the read-composition QC. Recommended with a coding-only transcriptome. Each set is a
+# FASTA (<set>_fasta) or an annotation (<set>_gff or <set>_gtf) extracted from <set>_genome
+# (default: genome); from an annotation only non-coding transcripts are kept (<set>_noncoding_only).
+# ncrna_fasta: path/to/ncrna.fa
+# ncrna_gtf: path/to/full_annotation.gtf      # rRNAs in it (biotype rRNA) are labelled rRNA
+# ncrna_genome: path/to/genome.fa
+# ncrna_noncoding_only: true
+# lncrna_fasta: path/to/lncrna.fa
+# rrna_fasta: path/to/rrna.fa
+# read_composition_priority: [rRNA, mRNA, lncRNA]   # pie slice for a read that hits several types
 
-# ---------------------------------------------------------------------------
-# Optional. Heat-correct reactivities for the same construct/transcriptome
-# probed at two different temperatures (e.g. a Structure-seq experiment run
-# at 30C and at 55C). Higher temperatures increase overall reagent
-# reactivity independent of any real structural difference, so
-# react_heat_correct.py rescales both temperatures' reactivity.react files
-# onto a common overall-signal scale, per-replicate. Before scaling, both
-# temperatures are first restricted to transcripts with RT-stop coverage
-# >= 1 in the pooled +DMS samples of BOTH temperatures, so the two
-# conditions being corrected share the exact same transcript set (see
-# qc/heat_correction_shared_transcripts.txt).
-#
-# Enabled by adding an optional "temperature" column to the samplesheet
-# (see the Snakefile's samplesheet comment) -- not a config key. This key
-# only controls the output filename suffix (results in
-# {id}/heat_correction/reactivity_<suffix>.react); omit it to keep the
-# default.
-# ---------------------------------------------------------------------------
-# heat_correction_suffix: corrected
+# --- 6. Extra outputs ---------------------------------------------------------
 
-# Optional. When true, ALSO run heat correction on every transcript present
-# in both temperatures' plain reactivity.react, with no RT-stop coverage
-# threshold at all -- alongside the normal coverage-qualified correction
-# above -- so the two can be compared (results in
-# {id}/heat_correction_all_transcripts/reactivity_<suffix>.{react,csv}, plus
-# qc/heat_correction_all_transcripts_scale_factors.log next to
-# qc/heat_correction_scale_factors.log for the coverage-qualified run).
-# Only meaningful when heat correction itself is enabled (see above).
-# heat_correction_compare_all_transcripts: true
-
-
-# ---------------------------------------------------------------------------
-# Optional. Estimate per-transcript relative abundance (RPKM and/or TPM)
-# from the untreated (-DMS) RT-stop counts, via StructureFold2's own
-# rtsc_abundances.py (see calculate_transcript_abundance in
-# workflow/rules/abundance.smk). One {id}/abundance_<mode>.csv per
-# requested mode; a single string or a list of "RPKM"/"TPM" are both
-# accepted. Omit entirely (or leave as an empty list) to skip this output.
-# ---------------------------------------------------------------------------
-# transcript_abundance: TPM
-
-# ---------------------------------------------------------------------------
-# Optional. Number of relative-position bins (5' to 3', each transcript split
-# into this many equal-width bins) used by the metagene coverage plots
-# (workflow/rules/metagene.smk). Default 100.
-# ---------------------------------------------------------------------------
+# genome + annotation_gtf: label every transcript position 5UTR / CDS / 3UTR (transcript_position_annotations.csv)
+# annotation_gtf: path/to/annotation.gtf
+# transcript_abundance: [TPM]                 # RPKM and/or TPM from the -DMS RT stops
+# rnaframework_xml: false                     # also write reactivities as RNA Framework XML (rf-norm format)
+# report_title: structure-fold2-snakemake QC report
 # metagene_bins: 100
+
+# Map the reads that miss the transcriptome to the genome (HISAT2) and report where they land
+# genome_check: false
+# genome_check_annotation: path/to/full_annotation.gtf   # default annotation_gtf, then gff
+# genome_check_hisat2_index: path/to/index/prefix        # default: built from genome (~1 h)
+# genome_check_organelles: "(chr)?(Mt|M|MT|mito.*|mitochondri.*|Pt|C|chloroplast.*|plastid.*|plastome.*)"
+# genome_check_locus_gap: 50
+# genome_check_top_loci: 200
+
+# One specificity figure across several finished runs
+# specificity_comparison_runs:
+#   - {name: Wild-type, output_dir: results_wt, samplesheet: config/samples_wt.tsv}
+#   - {name: Mutant, output_dir: results_mut, samplesheet: config/samples_mut.tsv}
+
+# --- 7. Two genotypes (docs/pipeline.md §11G) ---------------------------------
+
+# Two genomes (species or cultivars), each read mapped to its own genotype's transcripts. Replaces
+# transcript_source / genome / gff, and needs a 'genotype' samplesheet column.
+# genotypes:
+#   nipponbare:
+#     genome: path/to/nipponbare.fa
+#     gtf: path/to/nipponbare.gtf             # or gff:
+#   indica:
+#     genome: path/to/indica.fa
+#     gff: path/to/indica.gff3
+# transcript_matching: path/to/matching.tsv   # default: transcripts matched by identical ID
+# pool_minus_across_genotypes: false          # needs pool_replicates: minus
+# cross_genotype_min_identity: 0.9
+# cross_genotype_coordinate_map: path/to/coordinate_matching.tsv.gz
+# cross_genotype_coordinate_map_ref: nipponbare
+# genotype_comparison_min_positions: 20

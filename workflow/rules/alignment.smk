@@ -26,10 +26,10 @@ rule align_with_bowtie2:
     using Bowtie2.
     """
     input:
-        transcriptome_index=f"{TRANSCRIPTOME}.1.bt2",
+        transcriptome_index=get_bowtie2_index_for_sample,
         fastq1=f"{TMP}/reads/trimmed/{{sample}}_{{run}}_trimmed.fastq"
     output:
-        sam=f"{TMP}/output/se_runs/{{sample}}_{{run}}/{{sample}}_{{run}}_trimmed_mapped.sam",
+        sam=intermediate(f"{TMP}/output/se_runs/{{sample}}_{{run}}/{{sample}}_{{run}}_trimmed_mapped.sam"),
         mapping_log=f"{TMP}/output/se_runs/{{sample}}_{{run}}/{{sample}}_{{run}}_mapping_log.txt"
     params:
         # Bowtie2 index prefix: the .1.bt2 input minus its suffix
@@ -51,36 +51,30 @@ rule align_with_bowtie2:
 
 rule combine_sam_from_multiple_runs:
     """
-    Merge one sample's per-run SAMs
+    One SAM per sample: the runs' alignments one after another under the first run's header (a
+    single run is hard-linked, not copied), and the runs' Bowtie2 summaries added up.
     """
     input:
         sams=get_run_sams_for_sample,
         logs=get_run_mapping_logs_for_sample,
     output:
-        sam=f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped.sam",
+        sam=intermediate(f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped.sam"),
         mapping_log=f"{TMP}/output/se/{{sample}}/{{sample}}_mapping_log.txt",
     conda:
         "../envs/samtools.yaml"
-    params:
-        workdir=f"{workflow.basedir}/workflow",
     log:
         "logs/combine_sam_runs/{sample}.log"
     message:
         "Combining sequencing runs of sample {wildcards.sample} into one SAM"
     shell:
         r"""
-        set -euo pipefail
         exec > {log} 2>&1
-        mkdir -p $(dirname {output.sam})
-
-        first=1
-        for f in {input.sams}; do
-            if [ "$first" -eq 1 ]; then
-                samtools view -H "$f" > {output.sam}
-                first=0
-            fi
-            grep -v '^@' "$f" >> {output.sam}
-        done
-
-        python3 {params.workdir}/scripts/combine_mapping_logs.py {input.logs} -o {output.mapping_log}
+        set -- {input.sams}
+        if [ $# -eq 1 ]; then
+            ln -f "$1" {output.sam} || cp "$1" {output.sam}
+        else
+            samtools view -H "$1" > {output.sam}
+            for f in "$@"; do grep -v '^@' "$f" >> {output.sam}; done
+        fi
+        python3 workflow/scripts/alignment/combine_mapping_logs.py {input.logs} -o {output.mapping_log}
         """

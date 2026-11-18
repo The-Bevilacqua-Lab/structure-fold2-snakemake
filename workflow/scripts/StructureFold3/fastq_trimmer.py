@@ -13,9 +13,12 @@ import time
 import argparse
 import sys
 
-def trim_fastq(afile,fiveprime,threeprime,minlen,minqual,maxlen,log_flag,suffix,nextseqflag):
+def trim_fastq(afile,fiveprime,threeprime,minlen,minqual,maxlen,log_flag,suffix,nextseqflag,outfile=None):
     '''Runs the cutadapt steps in sequence'''
     out1,out2,out3 = [afile.split('.')[0]+'_'+str(x)+'.fastq' for x in ['1','2',suffix]]
+    if outfile:
+        out3 = outfile
+        out1,out2 = outfile+'.step1.fastq',outfile+'.step2.fastq'
     Q = ['-q',minqual] if nextseqflag == False else ['--nextseq-trim='+str(minqual)]
     M = ['-M',maxlen] if maxlen else []
     if log_flag == False:
@@ -62,8 +65,17 @@ def main():
     parser.add_argument('-maxlen',type=str, default=None, help='[default = None] maximum seq length',dest='max_len')#Make this optional
     parser.add_argument('-suffix',type=str,default='trimmed', help='[default = trimmed] trimmed <.fastq> file suffix',dest='suffix')
     parser.add_argument('-logname',type=str,default='trim_log', help='[default = trim_log] Name of the log file')
+    parser.add_argument('-input',type=str,default=None, help='Trim only this <.fastq> or <.fastq.gz> (needs -output)')
+    parser.add_argument('-output',type=str,default=None, help='Trimmed <.fastq> written for -input')
     args = parser.parse_args()
     #
+    if args.input or args.output:
+        if not (args.input and args.output):
+            parser.error('-input and -output go together')
+        logs = trim_fastq(args.input,args.fp_adapt,args.tp_adapt,args.min_len,args.min_qual,args.max_len,args.log,args.suffix,args.nextseq,args.output)
+        if args.log:
+            dump_bucket([logs],args.logname+'.txt')
+        return
     if args.log == False:
         print('')
         print('\033[1;4;94mStructure Fold2:\033[0;0;92m trim_fastqs.py\033[0m')

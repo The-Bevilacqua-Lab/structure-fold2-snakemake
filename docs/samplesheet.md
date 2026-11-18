@@ -1,12 +1,29 @@
 ## Samplesheet
 
-Tab-separated, one row per (sample, sequencing run):
+Tab-separated, one row per (sample, sequencing run). Examples: `config/samplesheet_minimal_example.tsv`
+(the three required columns) and `config/samplesheet_example.tsv`.
 
 | column | required | meaning |
 |---|---|---|
-| `sample` | yes | sample identifier, matches your FASTQ naming |
-| `condition` | yes | exactly `plus` (+DMS/treated) or `minus` (-DMS/untreated) |
-| `r1` | yes | path to that (sample, run)'s raw FASTQ |
-| `ID` | no | groups samples into biological replicates (e.g. `rep1`) -- a given ID needs both a `plus` and `minus` row somewhere in the sheet, since the reactivity calculation pairs one condition's ID against the other's. **If omitted**, defaults to each sample's row position *within its condition* (`rep1`, `rep2`, ... independently for `plus` and `minus`) -- i.e. the 1st `minus` row pairs with the 1st `plus` row as one replicate, the 2nd with the 2nd, and so on. This assumes equal `plus`/`minus` counts given in matching order; give an explicit `ID` column if that's not your layout. |
-| `run` | no | distinguishes multiple sequencing runs of the same sample (e.g. resequenced on a second flow cell); same-sample rows get concatenated before trimming. **Defaults to a single run** if omitted. |
-| `temperature` | no | probing temperature for that row (e.g. `30`, `55`, or labels like `low`/`high` -- any two distinct values). **If present**, enables heat correction (`react_heat_correct.py`) between the two temperature groups -- see Outputs below. Every row of a given `ID` must share the same temperature, and exactly two distinct values must appear across the whole sheet. Omit the column entirely to skip heat correction. |
+| `sample` | yes | Library name, used in file names. One library = one `sample`. |
+| `condition` | yes | `plus` (+DMS) or `minus` (−DMS) |
+| `r1` | yes | That (sample, run)'s FASTQ, plain or gzipped |
+| `ID` | no | Replicate: the +DMS and −DMS samples with the same `ID` give one reactivity (e.g. `rep1`). **Default:** the n-th `minus` sample and the n-th `plus` sample, in sheet order, form `rep<n>`. `pooled` and `pooled_*` are reserved. |
+| `run` | no | Sequencing run, for a library sequenced more than once (e.g. `run1`, `run2`). Each run is trimmed and aligned on its own, then the runs are merged into one SAM per sample. **Default:** one run. |
+| `temperature` | no | Probing temperature, exactly two distinct values (e.g. `23` and `42`, or `ambient` and `heat`). Turns on heat correction between them ([pipeline.md §10](pipeline.md#10-optional-heat-correction)). Every row of an `ID` must have the same temperature. |
+| `genotype` | with `genotypes` in the config | Which of the two `genotypes` the row belongs to. Every row of an `ID` must have the same genotype, and each genotype needs `plus` and `minus` samples. Not combinable with `temperature`. See [pipeline.md §11G](pipeline.md#11g-optional-two-genotypes). |
+
+The pipeline stops with an error naming the problem if a required column is missing, a
+`condition` is not `plus`/`minus`, a (sample, run) pair appears twice, or one sample's rows
+disagree on `condition`, `ID` or `temperature`.
+
+Example with two replicates, one library sequenced twice:
+
+```
+sample	ID	condition	run	r1
+S1	rep1	minus	run1	reads/S1_run1.fastq.gz
+S2	rep2	minus	run1	reads/S2_run1.fastq.gz
+S3	rep1	plus	run1	reads/S3_run1.fastq.gz
+S3	rep1	plus	run2	reads/S3_run2.fastq.gz
+S4	rep2	plus	run1	reads/S4_run1.fastq.gz
+```

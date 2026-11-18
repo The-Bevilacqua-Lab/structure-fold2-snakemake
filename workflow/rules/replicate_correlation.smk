@@ -43,10 +43,10 @@ rule plot_rt_stop_correlation:
     log:
         "logs/plot_rt_stop_correlation.log",
     conda:
-        "../envs/plotting.yaml"
+        "../envs/plotnine.yaml"
     shell:
         """
-        python3 workflow/scripts/plot_rt_stop_correlation.py \
+        python3 workflow/scripts/qc_plots/plot_rt_stop_correlation.py \
             --input {input} \
             --output {output} >{log} 2>&1
         """
@@ -93,10 +93,10 @@ rule plot_rt_stop_correlation_minus:
     log:
         "logs/plot_rt_stop_correlation_minus.log",
     conda:
-        "../envs/plotting.yaml"
+        "../envs/plotnine.yaml"
     shell:
         """
-        python3 workflow/scripts/plot_rt_stop_correlation.py \
+        python3 workflow/scripts/qc_plots/plot_rt_stop_correlation.py \
             --input {input} \
             --output {output} >{log} 2>&1
         """

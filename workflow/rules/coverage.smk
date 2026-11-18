@@ -5,7 +5,7 @@
 rule samtools_depth_by_condition:
     """samtools depth (all positions) for one condition."""
     input:
-        lambda wc: get_sams_by_condition_and_id(wc.condition, wc.id),
+        lambda wc: get_bams_by_condition_and_id(wc.condition, wc.id),
     output:
         f"{config['output_dir']}/{{id}}/depth_{{condition}}.txt",
     log:
@@ -62,7 +62,7 @@ rule calculate_nucleotide_coverage:
         transcriptome=TRANSCRIPTOME_UPPER,
     shell:
         """
-        python3 workflow/scripts/rtsc_to_nucleotide_coverage.py \
+        python3 workflow/scripts/coverage/rtsc_to_nucleotide_coverage.py \
             --rtsc {input.rtsc} \
             --fasta {params.transcriptome} \
             --output {output} >{log} 2>&1
@@ -86,7 +86,7 @@ rule filter_covered_transcripts:
     shell:
         """
         mkdir -p $(dirname {output}) \
-            && python3 workflow/scripts/filter_covered_transcripts.py \
+            && python3 workflow/scripts/coverage/filter_covered_transcripts.py \
                 --coverages {input} \
                 --threshold 1 \
                 --output {output} >{log} 2>&1
@@ -109,7 +109,7 @@ rule upset_covered_transcripts_replicates:
     shell:
         """
         mkdir -p $(dirname {output}) \
-            && python3 workflow/scripts/plot_covered_transcripts_upset.py \
+            && python3 workflow/scripts/qc_plots/plot_covered_transcripts_upset.py \
                 --coverages {input} \
                 --labels {params.labels} \
                 --threshold {params.threshold} \
@@ -136,7 +136,7 @@ if MERGED_IDS_DIFFER and len(IDS) > 1:
         shell:
             """
             mkdir -p $(dirname {output}) \
-                && python3 workflow/scripts/plot_covered_transcripts_upset.py \
+                && python3 workflow/scripts/qc_plots/plot_covered_transcripts_upset.py \
                     --coverages {input} \
                     --labels {params.labels} \
                     --threshold {params.threshold} \

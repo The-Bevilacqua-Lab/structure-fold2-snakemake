@@ -3,7 +3,8 @@
 #
 # Per transcript, coverage c becomes ln(c + 1) / mean(ln(c + 1)) before being
 # binned by relative position and averaged across transcripts -- see
-# workflow/scripts/metagene_profile.py. Two plots, one per coverage source:
+# workflow/scripts/coverage/metagene_profile.py, then plotted with plotnine
+# (workflow/scripts/qc_plots/plot_metagene.py). Two plots, one per coverage source:
 #   depth -- samtools depth (-a) on each sample's filtered, sorted BAM
 #   rtsc  -- each sample's RT-stop counts (.rtsc)
 ############################################################################
@@ -34,7 +35,7 @@ rule metagene_profile_depth:
         """
         mkdir -p $(dirname {output})
         samtools depth -a {input.bam} 2>{log} \
-            | python3 workflow/scripts/metagene_profile.py --mode depth --bins {params.bins} --output {output} 2>>{log}
+            | python3 workflow/scripts/coverage/metagene_profile.py --mode depth --bins {params.bins} --output {output} 2>>{log}
         """
 
 
@@ -55,7 +56,7 @@ rule metagene_profile_rtsc:
     shell:
         """
         mkdir -p $(dirname {output})
-        python3 workflow/scripts/metagene_profile.py --mode rtsc --input {input.rtsc} \
+        python3 workflow/scripts/coverage/metagene_profile.py --mode rtsc --input {input.rtsc} \
             --bins {params.bins} --output {output} >{log} 2>&1
         """
 
@@ -77,10 +78,10 @@ rule plot_metagene_depth:
     log:
         "logs/plot_metagene_depth.log",
     conda:
-        "../envs/metagene.yaml"
+        "../envs/plotnine.yaml"
     shell:
         """
-        python3 workflow/scripts/plot_metagene.py \
+        python3 workflow/scripts/qc_plots/plot_metagene.py \
             --profiles {input} --samples {params.samples} --conditions {params.conditions} \
             --title "Metagene coverage (samtools depth)" --output {output} >{log} 2>&1
         """
@@ -103,10 +104,10 @@ rule plot_metagene_rtsc:
     log:
         "logs/plot_metagene_rtsc.log",
     conda:
-        "../envs/metagene.yaml"
+        "../envs/plotnine.yaml"
     shell:
         """
-        python3 workflow/scripts/plot_metagene.py \
+        python3 workflow/scripts/qc_plots/plot_metagene.py \
             --profiles {input} --samples {params.samples} --conditions {params.conditions} \
             --title "Metagene coverage (RT-stops)" --output {output} >{log} 2>&1
         """

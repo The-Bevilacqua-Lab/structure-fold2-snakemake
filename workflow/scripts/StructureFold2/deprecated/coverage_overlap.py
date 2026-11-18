@@ -16,7 +16,7 @@ def read_coverage(coverage_file):
     all_the_things = {}
     with open(coverage_file,'r') as f:
         for line in f:
-            if line.startswith('transcript'):
+            if line.startswith('transcript,'):
                 file_keys = line.strip().split(',')[1:]
             else:
                 line_components = line.strip().split(',')

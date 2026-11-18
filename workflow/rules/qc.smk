@@ -160,11 +160,9 @@ if config.get("positive_control_fasta"):
 
     rule alignment_pct_positive_control:
         """
-        Calculate per-sample alignment percentage to the positive-control
-        sequence, identified by config['positive_control_name'] (must match
-        that sequence's FASTA header exactly, e.g. "p4p6"). Uses
-        samtools view -F 4 to select only mapped reads, then counts those
-        mapping to the positive control vs total mapped reads.
+        Share of a sample's mapped reads whose primary alignment is the positive control
+        (config positive_control_name, its FASTA ID, e.g. "p4p6"). Bowtie2 -a reports every
+        alignment of a read, so only primary alignments are counted (-F 0x904: one per read).
         """
         input:
             sam=f"{TMP}/output/se/{{sample}}/{{sample}}_trimmed_mapped.sam"
@@ -183,7 +181,7 @@ if config.get("positive_control_fasta"):
             set -euo pipefail
             mkdir -p $(dirname {output})
 
-            samtools view -F 4 {input.sam} | \
+            samtools view -F 0x904 {input.sam} | \
             awk -v samp="{wildcards.sample}" -v pc="{params.pc_name}" '
                 {{
                     total++

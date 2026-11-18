@@ -64,13 +64,13 @@ rule plot_specificity:
     log:
         "logs/plot_specificity.log",
     conda:
-        "../envs/plotting.yaml"
+        "../envs/plotnine.yaml"
     params:
         samples=SAMPLES,
         conditions=samples["condition"].tolist(),
     shell:
         """
-        python3 workflow/scripts/plot_specificity.py \
+        python3 workflow/scripts/qc_plots/plot_specificity.py \
             --inputs {input} \
             --samples {params.samples} \
             --conditions {params.conditions} \
@@ -82,7 +82,7 @@ rule plot_specificity:
 # list of {name, output_dir, samplesheet} entries, one per pipeline run.
 
 rule plot_specificity_comparison:
-    """Combined specificity figure across several pipeline runs."""
+    """Combined specificity figure across several pipeline runs (one panel per run)."""
     input:
         _specificity_comparison_inputs,
     output:
@@ -93,23 +93,17 @@ rule plot_specificity_comparison:
             caption="../report_captions/specificity_comparison.rst",
         ),
         manifest=f"{config['output_dir']}/qc/specificity_comparison_manifest.tsv",
-    run:
-        import pandas as pd
-
-        rows = []
-        for run in config["specificity_comparison_runs"]:
-            sheet = pd.read_csv(run["samplesheet"], sep="\t")
-            for _, row in sheet.iterrows():
-                rows.append(
-                    {
-                        "file": f"{run['output_dir']}/specificity_{row['sample']}.csv",
-                        "group": run["name"],
-                        "condition": row["condition"],
-                        "replicate": row.get("ID", row["sample"]),
-                    }
-                )
-        pd.DataFrame(rows).to_csv(output.manifest, sep="\t", index=False)
-        shell(
-            "Rscript workflow/scripts/plot_specificity_combined.R"
-            " {output.manifest} {output.plot}"
-        )
+    log:
+        "logs/plot_specificity_comparison.log",
+    conda:
+        "../envs/plotnine.yaml"
+    params:
+        runs=lambda wc: " ".join(
+            f"--run '{r['name']}' '{r['output_dir']}' '{r['samplesheet']}'"
+            for r in config.get("specificity_comparison_runs", [])
+        ),
+    shell:
+        """
+        python3 workflow/scripts/qc_plots/plot_specificity_comparison.py {params.runs} \
+            --manifest {output.manifest} --output {output.plot} >{log} 2>&1
+        """

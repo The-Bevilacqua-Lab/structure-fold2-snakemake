@@ -1,47 +1,40 @@
 ############################################################################
-# Optional 3' coverage-bias correction of the +DMS RT-stops
+# Optional: Correct for differences in 3' coverage-bias correction of
+# the +DMS RT-stops because of poly-(A) purification
 #
-# Enabled by config['3_prime_bias_correction']. Per reactivity ID:
-#   1. training set (one for the whole run, shared by every ID): the top
-#      3_prime_bias_n_transcripts protein-coding transcripts ranked by their
-#      lowest +DMS RT-stop coverage across all IDs;
-#   2. fit log(+DMS depth / -DMS depth) ~ distance_from_3' + relative_position
-#      + interaction on the training set's per-nucleotide read depth, with the
-#      -DMS reference either pooled across every -DMS sample or the ID's own
-#      -DMS samples (3_prime_bias_reference);
-#   3. divide every protein-coding transcript's +DMS RT-stops by the fitted
-#      bias. get_plus_rtsc_for_reactivity (helpers.smk) then hands the
-#      corrected .rtsc to the reactivity rules.
-# QC lands in {output_dir}/{id}/3prime_bias_correction/; the shared training
-# set in {output_dir}/qc/3prime_bias_correction/training_transcripts.tsv.
 ############################################################################
 
 BIAS_QC = f"{config['output_dir']}/{{id}}/3prime_bias_correction"
 BIAS_TRAINING_TSV = f"{config['output_dir']}/qc/3prime_bias_correction/training_transcripts.tsv"
 
 
-rule bias_protein_coding_transcripts:
-    """Protein-coding transcripts (from the annotation) present in the transcriptome."""
-    input:
-        annotation=BIAS_ANNOTATION,
-        fasta=TRANSCRIPTOME_UPPER,
-    output:
-        f"{BIAS_TMP}/protein_coding_transcripts.txt",
-    log:
-        "logs/bias_protein_coding_transcripts.log",
-    conda:
-        "../envs/metagene.yaml"
-    shell:
-        """
-        python3 workflow/scripts/list_protein_coding_transcripts.py \
-            --annotation {input.annotation} --fasta {input.fasta} --output {output} >{log} 2>&1
-        """
+# genotype mode: per-genotype lists, genotypes.smk
+if not GENOTYPE_MODE:
+
+    rule bias_protein_coding_transcripts:
+        """Protein-coding transcripts (from the annotation) present in the transcriptome."""
+        input:
+            annotation=BIAS_ANNOTATION,
+            fasta=TRANSCRIPTOME_UPPER,
+        output:
+            f"{BIAS_TMP}/protein_coding_transcripts.txt",
+        log:
+            "logs/bias_protein_coding_transcripts.log",
+        conda:
+            "../envs/metagene.yaml"
+        shell:
+            """
+            python3 workflow/scripts/three_prime_end_bias/list_protein_coding_transcripts.py \
+                --annotation {input.annotation} --fasta {input.fasta} --output {output} >{log} 2>&1
+            """
 
 
 rule bias_training_transcripts:
     """
-    One training set shared by every ID: the top-N protein-coding transcripts
-    ranked by their lowest +DMS RT-stop coverage across all IDs.
+    One training set shared by every ID, from each protein-coding transcript's
+    lowest +DMS RT-stop coverage across all IDs: the top-N
+    (3_prime_bias_training: top_n) or every transcript at or above
+    3_prime_bias_min_coverage in all IDs (all_covered).
     """
     input:
         rtsc=[get_raw_plus_rtsc(id_) for id_ in IDS],
@@ -55,14 +48,20 @@ rule bias_training_transcripts:
     conda:
         "../envs/metagene.yaml"
     params:
-        n=BIAS_N_TRANSCRIPTS,
+        selection=(
+            f"--mode top_n --n {BIAS_N_TRANSCRIPTS}"
+            if BIAS_TRAINING == "top_n"
+            else f"--mode all_covered --min-coverage {BIAS_MIN_COVERAGE}"
+        ),
         labels=IDS,
+        # genotype mode: score each transcript over its own genotype's IDs only (top_n per genotype)
+        groups=(f"--groups {' '.join(ID_GENOTYPE[i] for i in IDS)} --group-sep {GENOTYPE_SEP}" if GENOTYPE_MODE else ""),
     shell:
         """
         mkdir -p $(dirname {output.tsv}) $(dirname {output.bed}) \
-            && python3 workflow/scripts/select_bias_training_transcripts.py \
+            && python3 workflow/scripts/three_prime_end_bias/select_bias_training_transcripts.py \
                 --rtsc {input.rtsc} --labels {params.labels} --fasta {input.fasta} \
-                --protein-coding {input.protein_coding} --n {params.n} \
+                --protein-coding {input.protein_coding} {params.selection} {params.groups} \
                 --output {output.tsv} --bed {output.bed} >{log} 2>&1
         """
 
@@ -84,11 +83,16 @@ rule bias_training_depth:
         condition="plus|minus",
     conda:
         "../envs/metagene.yaml"
+    params:
+        # genotype mode: only the ID's own genotype's training transcripts are in its BAMs
+        prefix=lambda wc: f"{ID_GENOTYPE[wc.id]}{GENOTYPE_SEP}" if GENOTYPE_MODE else "",
     shell:
         """
-        samtools depth -a -b {input.bed} {input.bams} 2>{log} \
+        awk -v p="{params.prefix}" 'index($1, p) == 1' {input.bed} > {output}.bed
+        samtools depth -a -b {output}.bed {input.bams} 2>{log} \
             | awk -F'\\t' -v OFS='\\t' '{{s = 0; for (i = 3; i <= NF; i++) s += $i; print $1, $2, s}}' \
             | gzip >{output}
+        rm -f {output}.bed
         """
 
 
@@ -112,13 +116,13 @@ rule fit_3prime_bias_model:
     wildcard_constraints:
         id="[^/]+",
     conda:
-        "../envs/metagene.yaml"
+        "../envs/plotnine.yaml"
     params:
         bins=BIAS_BINS,
         title=lambda wc: f"{wc.id} ({BIAS_REFERENCE} -DMS reference): ",
     shell:
         """
-        python3 workflow/scripts/fit_3prime_bias_model.py \
+        python3 workflow/scripts/three_prime_end_bias/fit_3prime_bias_model.py \
             --depth-plus {input.plus} --depth-minus {input.minus} --training {input.training} \
             --bins {params.bins} --title "{params.title}" \
             --model {output.model} --binned {output.binned} --plot {output.plot} >{log} 2>&1
@@ -126,13 +130,12 @@ rule fit_3prime_bias_model:
 
 
 rule apply_3prime_bias_correction:
-    """Divide every protein-coding transcript's +DMS RT-stops by the fitted bias."""
+    """Divide every transcript's +DMS RT-stops (mRNA, ncRNA, positive control) by the fitted bias."""
     input:
         model=f"{BIAS_QC}/model.tsv",
         plus=lambda wc: get_raw_plus_rtsc(wc.id),
         minus=get_bias_reference_minus_rtsc,
         fasta=TRANSCRIPTOME_UPPER,
-        protein_coding=f"{BIAS_TMP}/protein_coding_transcripts.txt",
         training=BIAS_TRAINING_TSV,
     output:
         rtsc=f"{BIAS_TMP}/{{id}}/combined_plus_corrected.rtsc",
@@ -148,15 +151,15 @@ rule apply_3prime_bias_correction:
     wildcard_constraints:
         id="[^/]+",
     conda:
-        "../envs/metagene.yaml"
+        "../envs/plotnine.yaml"
     params:
         bins=BIAS_BINS,
         title=lambda wc: f"{wc.id} ({BIAS_REFERENCE} -DMS reference): ",
     shell:
         """
-        python3 workflow/scripts/apply_3prime_bias_correction.py \
+        python3 workflow/scripts/three_prime_end_bias/apply_3prime_bias_correction.py \
             --model {input.model} --plus-rtsc {input.plus} --minus-rtsc {input.minus} \
-            --fasta {input.fasta} --protein-coding {input.protein_coding} --training {input.training} \
+            --fasta {input.fasta} --training {input.training} \
             --bins {params.bins} --title "{params.title}" \
             --output {output.rtsc} --binned {output.binned} --plot {output.plot} >{log} 2>&1
         """

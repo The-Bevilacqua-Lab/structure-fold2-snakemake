@@ -20,11 +20,12 @@ rule rtsc_to_react:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold3/rtsc_to_react.py",
         output_prefix=f"{config['output_dir']}/{{id}}/reactivity",
+        norm=REACTIVITY_NORM_ARGS,
     shell:
         """
         mkdir -p $(dirname {output}) \
             && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {input.transcriptome} \
-                -name {params.output_prefix} >{log} 2>&1
+                -name {params.output_prefix} {params.norm} >{log} 2>&1
         """
 
 
@@ -33,6 +34,7 @@ rule rtsc_to_raw_react:
     input:
         plus=get_plus_rtsc_for_reactivity,
         minus=get_minus_rtsc_for_reactivity,
+        transcriptome=TRANSCRIPTOME_UPPER,
     output:
         f"{config['output_dir']}/{{id}}/raw_reactivity.react",
     log:
@@ -44,64 +46,66 @@ rule rtsc_to_raw_react:
     params:
         workdir=f"{workflow.basedir}/workflow",
         script="scripts/StructureFold3/rtsc_to_react.py",
-        transcriptome=TRANSCRIPTOME_UPPER,
         output_prefix=f"{config['output_dir']}/{{id}}/raw_reactivity",
+        norm=REACTIVITY_NORM_ARGS,
     shell:
         """
         mkdir -p $(dirname {output}) \
-            && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
-                -name {params.output_prefix} -nrm_off -threshold 1000000 >{log} 2>&1
+            && python3 {params.workdir}/{params.script} {input.minus} {input.plus} {input.transcriptome} \
+                -name {params.output_prefix} -nrm_off -threshold 1000000 {params.norm} >{log} 2>&1
         """
 
 
-rule convert_react_to_csv:
-    """Convert reactivity.react to CSV."""
+rule react_to_csv:
+    """
+    Any reactivity .react (standard, raw, heat-corrected, norm comparison) -> CSV with columns
+    transcript, position, base, reactivity (NA where the .react has no value).
+    """
+    input:
+        react=f"{config['output_dir']}/{{path}}.react",
+        transcriptome=TRANSCRIPTOME_UPPER,
+    output:
+        f"{config['output_dir']}/{{path}}.csv",
+    log:
+        "logs/react_to_csv/{path}.log",
+    wildcard_constraints:
+        # <id>/.../reactivity[_<suffix>] or raw_reactivity; depth_matched/ writes its CSVs directly
+        path=r"(?!depth_matched/)(?:[^/]+/)+(?:raw_)?reactivity(?:_[^/]+)?",
+    conda:
+        "../envs/biopython.yaml"
+    shell:
+        "python3 workflow/scripts/reactivity/react_to_csv.py --react {input.react} --output {output} "
+        "--fasta {input.transcriptome} > {log} 2>&1"
+
+
+# RNA Framework XML (config rnaframework_xml): the same reactivities in the rf-norm output format,
+# one <transcript>.xml per transcript with at least one value, readable by rf-fold, rf-correlate,
+# rf-compare etc. Attributes: Ding scoring (ln(count + 1)), 2-8% over the whole transcript, AC, cap 7.
+RF_XML_SCRIPT = "workflow/scripts/reactivity/react_to_rnaframework_xml.py"
+
+
+rule react_to_rnaframework_xml:
+    """reactivity.react -> rnaframework_xml/<transcript>.xml (rf-norm format)."""
     input:
         react=f"{config['output_dir']}/{{id}}/reactivity.react",
         transcriptome=TRANSCRIPTOME_UPPER,
     output:
-        f"{config['output_dir']}/{{id}}/reactivity.csv",
+        directory(f"{config['output_dir']}/{{id}}/rnaframework_xml"),
     log:
-        "logs/convert_react_to_csv/{id}.log",
+        "logs/react_to_rnaframework_xml/{id}.log",
     wildcard_constraints:
         id="[^/]+",
     conda:
         "../envs/biopython.yaml"
     shell:
         """
-        python3 workflow/scripts/react_to_csv.py --react {input.react} --output {output} --fasta {input.transcriptome} >{log} 2>&1
-        """
-
-
-rule convert_raw_react_to_csv:
-    """Convert raw_reactivity.react to CSV."""
-    input:
-        f"{config['output_dir']}/{{id}}/raw_reactivity.react",
-    output:
-        f"{config['output_dir']}/{{id}}/raw_reactivity.csv",
-    log:
-        "logs/convert_raw_react_to_csv/{id}.log",
-    wildcard_constraints:
-        id="[^/]+",
-    conda:
-        "../envs/biopython.yaml"
-    params:
-        transcriptome=TRANSCRIPTOME_UPPER,
-    shell:
-        """
-        python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome} >{log} 2>&1
+        python3 {RF_XML_SCRIPT} --react {input.react} --fasta {input.transcriptome} --outdir {output} >{log} 2>&1
         """
 
 
 # Normalization comparison (experimental, on demand): every combination of
 # trim3 (notrim|trim125), ln (noln|ln) and 2-8% scaling (nonrm|nrm), always
 # on each replicate's own unpooled RT-stop counts.
-NORM_COMBOS = expand(
-    "{trim}_{nlog}_{norm}",
-    trim=["notrim", "trim125"],
-    nlog=["noln", "ln"],
-    norm=["nonrm", "nrm"],
-)
 
 
 
@@ -134,29 +138,9 @@ rule rtsc_to_react_comparison:
         python3 {params.workdir}/{params.script} {input.minus} {input.plus} {params.transcriptome} \
             -name {params.output_prefix} \
             {params.trim_flag} {params.ln_flag} {params.nrm_flag} >{log} 2>&1 \
-        && python3 workflow/scripts/mask_trim3_react.py \
+        && python3 workflow/scripts/reactivity/mask_trim3_react.py \
             --input {output} --output {output}.masked --trim3 {params.trim3} >>{log} 2>&1 \
         && mv {output}.masked {output}
         """
 
 
-rule convert_react_comparison_to_csv:
-    """Convert a norm-comparison reactivity.react to CSV."""
-    input:
-        f"{config['output_dir']}/{{id}}/norm_comparison/{{trim}}_{{nlog}}_{{norm}}/reactivity.react",
-    output:
-        f"{config['output_dir']}/{{id}}/norm_comparison/{{trim}}_{{nlog}}_{{norm}}/reactivity.csv",
-    log:
-        "logs/convert_react_comparison_to_csv/{id}_{trim}_{nlog}_{norm}.log",
-    wildcard_constraints:
-        trim="notrim|trim125",
-        nlog="noln|ln",
-        norm="nonrm|nrm",
-    conda:
-        "../envs/biopython.yaml"
-    params:
-        transcriptome=TRANSCRIPTOME_UPPER,
-    shell:
-        """
-        python3 workflow/scripts/react_to_csv.py --react {input} --output {output} --fasta {params.transcriptome} >{log} 2>&1
-        """

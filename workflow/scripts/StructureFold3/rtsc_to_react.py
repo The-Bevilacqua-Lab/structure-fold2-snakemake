@@ -12,6 +12,13 @@ are overwhelmingly zero, so each transcript is handled as the short list of its 
 vectors. Sums are added sequentially (Python 3.12+ sum() compensates float sums, which would change the last bits) and
 <.scale> values are written like Python 2's str() (12 significant digits), so results match the Python 2 version.
 Transcripts are written in file order rather than Python 2's arbitrary dict order, and the Biopython dependency is gone.
+
+Addition (not in StructureFold2): -gu_norm scales each channel by its mean over the transcript's G/U positions instead
+of its mean over all positions, before -DMS is subtracted. DMS does not modify G/U on the Watson-Crick face, so the G/U
+mean measures each channel's background alone; the all-position +DMS mean also contains the A/C DMS signal, which puts
+the +DMS background below the -DMS background in proportion to the signal and over-subtracts. With -gu_norm, positions
+1..shortest-1 whose base is G or U (T) form the scale set; a transcript with fewer than -min_gu such positions, or no
+stops at them in either channel, gets no reactivity. Without -gu_norm the output is unchanged.
 '''
 
 #Imports
@@ -90,9 +97,13 @@ def nonzero_counts(stops):
         values.append(float(stops[token_start:token_end]))
     return stops.count('\t')+1,positions,values
 
-def calculate_raw_reactivity(reagent_minus,reagent_plus,nlog_off=False):
+GU_BASES = 'GTU' #background bases for -gu_norm
+
+def calculate_raw_reactivity(reagent_minus,reagent_plus,nlog_off=False,gu_seqs=None,min_gu=20):
     '''Calculates raw reactivity, with or without the natural log. Each transcript is returned as
-    (length,positions,values): the vector has length entries, all 0 except the listed positive values.'''
+    (length,positions,values): the vector has length entries, all 0 except the listed positive values.
+    gu_seqs (transcript sequences) switches on G/U normalization: each channel is divided by its mean over the
+    G/U positions 1..shortest-1 instead of by its mean over all positions.'''
     data_out,log_cache = {},{}
     def log_plus_one(value):
         try:
@@ -108,15 +119,32 @@ def calculate_raw_reactivity(reagent_minus,reagent_plus,nlog_off=False):
         if nlog_off == False:
             plus_vals = [log_plus_one(v) for v in plus_vals]
             minus_vals = [log_plus_one(v) for v in minus_vals]
-        sum_plus,sum_minus = sequential_sum(plus_vals),sequential_sum(minus_vals)
+        shortest = min(length,minus_length)
+        if gu_seqs is None:
+            sum_plus,sum_minus = sequential_sum(plus_vals),sequential_sum(minus_vals)
+            #channel / mean over all positions, written as in StructureFold2
+            scale_plus = scale_minus = None
+        else:
+            if key not in gu_seqs:
+                continue
+            gu = specificity_mask(gu_seqs[key],GU_BASES,shortest-1) #gu[p-1]: position p is G/U
+            n_gu = gu.count(1)
+            if n_gu < min_gu:
+                continue
+            sum_plus = sequential_sum([v for p,v in zip(plus_pos,plus_vals) if 1 <= p < shortest and gu[p-1]])
+            sum_minus = sequential_sum([v for p,v in zip(minus_pos,minus_vals) if 1 <= p < shortest and gu[p-1]])
+            scale_plus,scale_minus = sum_plus/n_gu,sum_minus/n_gu
         if sum_plus != 0 and sum_minus != 0:
-            minus_nrm = {p:float(z)/float(sum_minus)*length for p,z in zip(minus_pos,minus_vals)}
-            shortest = min(length,minus_length)
+            if scale_plus is None:
+                minus_nrm = {p:float(z)/float(sum_minus)*length for p,z in zip(minus_pos,minus_vals)}
+            else:
+                minus_nrm = {p:z/scale_minus for p,z in zip(minus_pos,minus_vals)}
             positions,values = [],[]
             for p,y in zip(plus_pos,plus_vals):
                 #Only positions with plus signal can be positive after subtracting the minus
                 if p < shortest:
-                    difference = float(y)/float(sum_plus)*length - minus_nrm.get(p,0.0)
+                    plus_nrm = float(y)/float(sum_plus)*length if scale_plus is None else y/scale_plus
+                    difference = plus_nrm - minus_nrm.get(p,0.0)
                     if difference > 0:
                         positions.append(p)
                         values.append(difference)
@@ -229,6 +257,8 @@ def main():
     parser.add_argument('-name',type=str,default=None, help='Change the name of the outfile, overrides default')
     parser.add_argument('-restrict',default = None, help = 'Limit analysis to these specific transcripts <.txt> ')
     parser.add_argument('-trim3',type=int,default=0, help='[default = 0] Number of bases to exclude from the 3\' end before normalization')
+    parser.add_argument('-gu_norm',action='store_true', help='Scale each channel by its mean over G/U positions instead of all positions (not in StructureFold2)')
+    parser.add_argument('-min_gu',type=int,default=20, help='[default = 20] -gu_norm: fewest G/U positions for a transcript to get a reactivity')
     args = parser.parse_args()
 
     #Create output name
@@ -241,11 +271,11 @@ def main():
     covered = get_covered_transcripts(args.restrict) if args.restrict != None else None
     control_data,treatment_data = read_in_rtsc(args.control,covered),read_in_rtsc(args.treatment,covered)
 
-    #Calculate Derived Reactivity
-    data = calculate_raw_reactivity(control_data,treatment_data,args.ln_off)
-
     #Read in transcript sequences
     seqs = read_in_fasta(args.fasta)
+
+    #Calculate Derived Reactivity
+    data = calculate_raw_reactivity(control_data,treatment_data,args.ln_off,seqs if args.gu_norm else None,args.min_gu)
 
     #Generate and write scale, or read a <.scale> file in
     normalizaiton_scale = generate_normalization_scale(data,seqs,args.bases,args.trim3) if args.scale == None else read_normalization_scale(args.scale)

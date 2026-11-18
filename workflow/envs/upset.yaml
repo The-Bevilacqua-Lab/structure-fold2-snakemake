@@ -6,3 +6,4 @@ dependencies:
   - pandas
   - matplotlib
   - upsetplot
+  - mscorefonts=0.0.1   # Arial (scripts/plot_style.py)
